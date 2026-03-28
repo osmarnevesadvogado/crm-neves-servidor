@@ -166,17 +166,61 @@ async function generateResponse(history, userMessage) {
   }
 }
 
+// ===== CONTROLE DE DUPLICATAS E PAUSA =====
+const processedMessages = new Set();
+const pausedConversas = new Map(); // telefone -> timestamp da pausa
+
+// Limpar mensagens processadas a cada 10 minutos (evitar vazamento de memória)
+setInterval(() => { processedMessages.clear(); }, 10 * 60 * 1000);
+
+// Pausar IA para um telefone por X minutos (quando Dr. Osmar responde manualmente)
+function pauseAI(phone, minutes = 30) {
+  pausedConversas.set(cleanPhone(phone), Date.now() + minutes * 60 * 1000);
+  console.log(`[PAUSE] IA pausada para ${phone} por ${minutes} min`);
+}
+
+function isAIPaused(phone) {
+  const until = pausedConversas.get(cleanPhone(phone));
+  if (!until) return false;
+  if (Date.now() > until) {
+    pausedConversas.delete(cleanPhone(phone));
+    return false;
+  }
+  return true;
+}
+
 // ===== WEBHOOK Z-API (recebe mensagens do WhatsApp) =====
 app.post('/webhook/zapi', async (req, res) => {
   try {
     const body = req.body;
 
+    // Extrair ID da mensagem para evitar duplicatas
+    const messageId = body.messageId || body.ids?.[0]?.serialized || body.id?.id || '';
+
+    // Só processar mensagens de texto recebidas
     const isMessage = body.type === 'ReceivedCallback' || body.text?.message;
     const isFromMe = body.fromMe || body.isFromMe;
 
-    if (!isMessage || isFromMe) {
+    // Se é mensagem ENVIADA por mim (Dr. Osmar), pausar a IA nessa conversa
+    if (isFromMe) {
+      const phone = body.phone || body.to?.replace('@c.us', '') || '';
+      if (phone) {
+        pauseAI(phone, 30);
+        console.log(`[MANUAL] Dr. Osmar respondeu para ${phone} - IA pausada 30min`);
+      }
+      return res.json({ status: 'manual_detected' });
+    }
+
+    if (!isMessage) {
       return res.json({ status: 'ignored' });
     }
+
+    // Evitar processar a mesma mensagem duas vezes
+    if (messageId && processedMessages.has(messageId)) {
+      console.log(`[DUP] Mensagem duplicada ignorada: ${messageId}`);
+      return res.json({ status: 'duplicate' });
+    }
+    if (messageId) processedMessages.add(messageId);
 
     const phone = body.phone || body.from?.replace('@c.us', '') || '';
     const text = body.text?.message || body.body || '';
@@ -184,6 +228,15 @@ app.post('/webhook/zapi', async (req, res) => {
 
     if (!phone || !text) {
       return res.json({ status: 'no_content' });
+    }
+
+    // Verificar se IA está pausada para este telefone
+    if (isAIPaused(phone)) {
+      console.log(`[PAUSE] Mensagem de ${phone} ignorada - IA pausada (Dr. Osmar respondendo)`);
+      // Ainda salva a mensagem no banco, mas não responde
+      const conversa = await getOrCreateConversa(phone);
+      await saveMessage(conversa.id, 'user', text);
+      return res.json({ status: 'paused' });
     }
 
     console.log(`[MSG] De: ${phone} (${senderName}): ${text}`);
@@ -218,6 +271,22 @@ app.post('/webhook/zapi', async (req, res) => {
     console.error('[WEBHOOK] Erro:', e);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Pausar/retomar IA manualmente pelo CRM
+app.post('/api/pausar', (req, res) => {
+  const { phone, minutes } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone obrigatório' });
+  pauseAI(phone, minutes || 30);
+  res.json({ ok: true, msg: `IA pausada para ${phone} por ${minutes || 30} minutos` });
+});
+
+app.post('/api/retomar', (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone obrigatório' });
+  pausedConversas.delete(cleanPhone(phone));
+  console.log(`[RESUME] IA retomada para ${phone}`);
+  res.json({ ok: true, msg: `IA retomada para ${phone}` });
 });
 
 // ===== API PARA O CRM (frontend) =====

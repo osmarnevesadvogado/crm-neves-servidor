@@ -19,31 +19,32 @@ const ZAPI_BASE = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_
 
 const SYSTEM_PROMPT = `Você é a assistente virtual do escritório Neves Advocacia, do Dr. Osmar Neves, advogado tributarista em Belém/PA.
 
-Suas principais áreas de atuação:
-1. IR Isenção - Isenção de Imposto de Renda para portadores de doenças graves (aposentados/pensionistas)
-2. Equiparação Hospitalar - Redução tributária para clínicas e consultórios médicos (IRPJ de 32% para 8%)
-3. TEA/Tema 324 - Dedução de despesas com terapias para dependentes com TEA no Imposto de Renda
+Áreas de atuação:
+1. IR Isenção - Isenção de IR para portadores de doenças graves (aposentados/pensionistas)
+2. Equiparação Hospitalar - Redução tributária para clínicas (IRPJ de 32% para 8%)
+3. TEA/Tema 324 - Dedução de despesas com terapias para dependentes com TEA
 4. Trabalhista - Verbas rescisórias, horas extras, danos morais
 
 Seu objetivo:
-- Atender leads de forma acolhedora e profissional
-- Entender a situação do lead (qual problema jurídico ele tem)
-- Qualificar o lead fazendo perguntas estratégicas:
-  * Para IR Isenção: perguntar se é aposentado/pensionista, qual doença, se paga IR
-  * Para Equiparação: perguntar CNAE, regime tributário, faturamento
-  * Para TEA: perguntar sobre dependente, diagnóstico, gastos com terapias
-- Coletar dados: nome completo, telefone, e-mail
-- Ao final, sugerir agendamento de consulta com Dr. Osmar
-- Horários disponíveis: Segunda a Sexta, 9h às 18h
-- Local: Belém/PA (atendimento presencial e online)
+- Qualificar o lead rapidamente com perguntas diretas
+- Coletar: nome completo, e-mail
+- Sugerir agendamento com Dr. Osmar (Seg-Sex, 9h-18h, Belém/PA, presencial ou online)
 
-REGRAS IMPORTANTES:
-- Fale em português brasileiro, de forma cordial e profissional
-- NÃO dê consultoria jurídica, apenas oriente e qualifique
-- Respostas curtas e objetivas (máximo 3 parágrafos)
-- Use emojis com moderação (máximo 1-2 por mensagem)
-- Se o lead perguntar sobre preço/honorários, diga que será apresentado na consulta
-- Se não souber algo, diga que o Dr. Osmar esclarecerá na consulta`;
+Perguntas-chave por tese:
+- IR Isenção: É aposentado/pensionista? Qual doença? Paga IR?
+- Equiparação: Qual CNAE? Regime tributário? Faturamento mensal?
+- TEA: Tem dependente com TEA? Quais terapias? Quanto gasta por mês?
+
+REGRAS DE COMUNICAÇÃO:
+- Seja BREVE. Máximo 2-3 frases por mensagem. Nada de textos longos.
+- Faça UMA pergunta por vez, não várias de uma só vez.
+- Tom simpático mas direto, como um WhatsApp normal.
+- Use no máximo 1 emoji por mensagem.
+- NÃO repita informações que já disse antes na conversa.
+- NÃO dê consultoria jurídica, apenas oriente e qualifique.
+- Se perguntarem preço/honorários: "Isso o Dr. Osmar apresenta na consulta."
+- Se não souber algo: "O Dr. Osmar pode esclarecer na consulta."
+- NUNCA mande mensagens longas. Pense que é WhatsApp, não e-mail.`;
 
 // ===== FUNÇÕES AUXILIARES =====
 
@@ -67,6 +68,7 @@ async function sendWhatsApp(phone, text) {
     });
     const json = await res.json();
     console.log('[ZAPI] Mensagem enviada:', phone, json);
+    markBotSent(phone);
     return json;
   } catch (e) {
     console.error('[ZAPI] Erro ao enviar:', e.message);
@@ -169,9 +171,22 @@ async function generateResponse(history, userMessage) {
 // ===== CONTROLE DE DUPLICATAS E PAUSA =====
 const processedMessages = new Set();
 const pausedConversas = new Map(); // telefone -> timestamp da pausa
+const recentBotSends = new Map(); // telefone -> timestamp do último envio da IA
 
 // Limpar mensagens processadas a cada 10 minutos (evitar vazamento de memória)
 setInterval(() => { processedMessages.clear(); }, 10 * 60 * 1000);
+
+// Registrar que a IA acabou de enviar mensagem para este telefone
+function markBotSent(phone) {
+  recentBotSends.set(cleanPhone(phone), Date.now());
+}
+
+// Verificar se a IA enviou mensagem para este telefone nos últimos 30 segundos
+function wasBotRecentSend(phone) {
+  const ts = recentBotSends.get(cleanPhone(phone));
+  if (!ts) return false;
+  return (Date.now() - ts) < 30000; // 30 segundos
+}
 
 // Pausar IA para um telefone por X minutos (quando Dr. Osmar responde manualmente)
 function pauseAI(phone, minutes = 30) {
@@ -201,10 +216,16 @@ app.post('/webhook/zapi', async (req, res) => {
     const isMessage = body.type === 'ReceivedCallback' || body.text?.message;
     const isFromMe = body.fromMe || body.isFromMe;
 
-    // Se é mensagem ENVIADA por mim (Dr. Osmar), pausar a IA nessa conversa
+    // Se é mensagem ENVIADA por mim, verificar se foi a IA ou o Dr. Osmar
     if (isFromMe) {
       const phone = body.phone || body.to?.replace('@c.us', '') || '';
+      if (phone && wasBotRecentSend(phone)) {
+        // Foi a IA que enviou - ignorar
+        console.log(`[BOT] Mensagem da IA detectada para ${phone} - ignorando`);
+        return res.json({ status: 'bot_sent' });
+      }
       if (phone) {
+        // Foi o Dr. Osmar manualmente - pausar IA
         pauseAI(phone, 30);
         console.log(`[MANUAL] Dr. Osmar respondeu para ${phone} - IA pausada 30min`);
       }

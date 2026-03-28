@@ -14,6 +14,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 
 const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE_ID;
 const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+const ZAPI_CLIENT_TOKEN = process.env.ZAPI_CLIENT_TOKEN;
 const ZAPI_BASE = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}`;
 
 const SYSTEM_PROMPT = `Você é a assistente virtual do escritório Neves Advocacia, do Dr. Osmar Neves, advogado tributarista em Belém/PA.
@@ -61,7 +62,7 @@ async function sendWhatsApp(phone, text) {
   try {
     const res = await fetch(`${ZAPI_BASE}/send-text`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN },
       body: JSON.stringify({ phone: cleanPhone(phone), message: text })
     });
     const json = await res.json();
@@ -237,7 +238,7 @@ app.get('/api/health', (req, res) => {
 // Testar conexão Z-API
 app.get('/api/test/zapi', async (req, res) => {
   try {
-    const r = await fetch(`${ZAPI_BASE}/status`);
+    const r = await fetch(`${ZAPI_BASE}/status`, { headers: { 'Client-Token': ZAPI_CLIENT_TOKEN } });
     const json = await r.json();
     res.json(json);
   } catch (e) {

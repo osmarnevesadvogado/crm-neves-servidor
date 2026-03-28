@@ -74,6 +74,23 @@ function cleanPhone(phone) {
   return p;
 }
 
+// Cortar mensagens longas - garante brevidade independente do modelo
+function trimResponse(text) {
+  // Remover bullet points e listas
+  let clean = text.replace(/^[\s]*[-•·*]\s*/gm, '').replace(/^[\s]*\d+[.)]\s*/gm, '');
+  // Remover linhas vazias extras
+  clean = clean.replace(/\n{2,}/g, '\n').trim();
+  // Separar em frases
+  const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+  // Pegar no máximo 3 frases
+  const result = sentences.slice(0, 3).join(' ').trim();
+  // Se ainda ficou muito longo (mais de 300 chars), cortar
+  if (result.length > 300) {
+    return sentences.slice(0, 2).join(' ').trim();
+  }
+  return result;
+}
+
 // Enviar mensagem pelo WhatsApp via Z-API
 async function sendWhatsApp(phone, text) {
   try {
@@ -221,7 +238,7 @@ async function generateResponse(history, userMessage) {
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 150,
       system: SYSTEM_PROMPT,
       messages: cleanMessages
@@ -375,6 +392,39 @@ setInterval(() => {
 // Rodar uma vez ao iniciar (após 60 segundos para dar tempo de conectar tudo)
 setTimeout(() => checkFollowUps(), 60 * 1000);
 
+// ===== BUFFER DE MENSAGENS (espera lead terminar de digitar) =====
+const messageBuffer = new Map(); // telefone -> { messages: [], timer: null, senderName: '' }
+const BUFFER_DELAY = 8000; // 8 segundos de espera
+
+function bufferMessage(phone, text, senderName) {
+  return new Promise((resolve) => {
+    const cleanP = cleanPhone(phone);
+    const existing = messageBuffer.get(cleanP) || { messages: [], timer: null, senderName: '' };
+
+    // Adicionar mensagem ao buffer
+    existing.messages.push(text);
+    existing.senderName = senderName || existing.senderName;
+
+    // Cancelar timer anterior
+    if (existing.timer) clearTimeout(existing.timer);
+
+    // Novo timer: após 8 segundos sem novas mensagens, processa tudo
+    existing.timer = setTimeout(() => {
+      const combined = existing.messages.join('\n');
+      const name = existing.senderName;
+      messageBuffer.delete(cleanP);
+      resolve({ combined, senderName: name, shouldProcess: true });
+    }, BUFFER_DELAY);
+
+    messageBuffer.set(cleanP, existing);
+
+    // Se não é a primeira mensagem, resolve sem processar (o timer anterior cuida)
+    if (existing.messages.length > 1) {
+      resolve({ shouldProcess: false });
+    }
+  });
+}
+
 // ===== CONTROLE DE DUPLICATAS E PAUSA =====
 const processedMessages = new Set();
 const pausedConversas = new Map(); // telefone -> timestamp da pausa
@@ -461,7 +511,6 @@ app.post('/webhook/zapi', async (req, res) => {
     // Verificar se IA está pausada para este telefone
     if (isAIPaused(phone)) {
       console.log(`[PAUSE] Mensagem de ${phone} ignorada - IA pausada (Dr. Osmar respondendo)`);
-      // Ainda salva a mensagem no banco, mas não responde
       const conversa = await getOrCreateConversa(phone);
       await saveMessage(conversa.id, 'user', text);
       return res.json({ status: 'paused' });
@@ -469,28 +518,45 @@ app.post('/webhook/zapi', async (req, res) => {
 
     console.log(`[MSG] De: ${phone} (${senderName}): ${text}`);
 
-    const lead = await getOrCreateLead(phone, senderName);
+    // Responder imediatamente ao webhook (Z-API não precisa esperar)
+    res.json({ status: 'buffered' });
+
+    // Adicionar ao buffer e esperar 8 segundos por mais mensagens
+    const result = await bufferMessage(phone, text, senderName);
+
+    // Se não é hora de processar (tem mais mensagens chegando), parar aqui
+    if (!result.shouldProcess) return;
+
+    // Agora sim, processar todas as mensagens juntas
+    const combinedText = result.combined;
+    const finalName = result.senderName;
+
+    console.log(`[BUFFER] Processando ${combinedText.split('\n').length} msg(s) de ${phone}: "${combinedText.slice(0, 100)}"`);
+
+    const lead = await getOrCreateLead(phone, finalName);
     const conversa = await getOrCreateConversa(phone);
 
     if (lead && conversa && !conversa.lead_id) {
       await supabase
         .from('conversas')
-        .update({ lead_id: lead.id, titulo: senderName || conversa.titulo })
+        .update({ lead_id: lead.id, titulo: finalName || conversa.titulo })
         .eq('id', conversa.id);
     }
 
-    await saveMessage(conversa.id, 'user', text);
+    // Salvar todas as mensagens do buffer como uma entrada
+    await saveMessage(conversa.id, 'user', combinedText);
 
     // Detectar se lead está quente
-    if (lead && isHotLead(text)) {
-      console.log(`[HOT] Lead quente detectado: ${senderName} - "${text.slice(0, 60)}"`);
+    if (lead && isHotLead(combinedText)) {
+      console.log(`[HOT] Lead quente detectado: ${finalName} - "${combinedText.slice(0, 60)}"`);
       await markLeadHot(lead.id);
-      await notifyHotLead(senderName || lead.nome, phone, text.slice(0, 100));
-      await trackEvent(conversa.id, lead.id, 'lead_quente', text.slice(0, 100));
+      await notifyHotLead(finalName || lead.nome, phone, combinedText.slice(0, 100));
+      await trackEvent(conversa.id, lead.id, 'lead_quente', combinedText.slice(0, 100));
     }
 
     const history = await getHistory(conversa.id);
-    const reply = await generateResponse(history, text);
+    const rawReply = await generateResponse(history, combinedText);
+    const reply = trimResponse(rawReply);
     await saveMessage(conversa.id, 'assistant', reply);
     await sendWhatsApp(phone, reply);
 
@@ -562,7 +628,7 @@ app.get('/api/test/zapi', async (req, res) => {
 app.get('/api/test/claude', async (req, res) => {
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 20,
       messages: [{ role: 'user', content: 'Diga apenas: OK' }]
     });

@@ -1,180 +1,200 @@
-// ===== FLUXO DE CONVERSA (Máquina de Estados) =====
-// Etapas: saudacao → qualificacao → proposta → agendamento → pos_agendamento
-//
-// Cada etapa define:
-//   - O que a Ana deve focar
-//   - Condições para avançar para a próxima etapa
-//   - Instruções específicas para o prompt
-
+// ===== INTELIGÊNCIA ARTIFICIAL (Claude) =====
+const Anthropic = require('@anthropic-ai/sdk');
 const config = require('./config');
-const { ETAPAS } = config;
+const fluxo = require('./fluxo');
 
-// Estado das conversas em memória (etapa atual)
-// Persistido no campo 'etapa_conversa' da tabela conversas (via database.js)
-const conversaEtapas = new Map();
+const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
 
-// Definição de cada etapa do fluxo
-const FLUXO = {
-  [ETAPAS.SAUDACAO]: {
-    instrucao: `ETAPA ATUAL: SAUDAÇÃO
-Seu objetivo agora: entender por que a pessoa está entrando em contato.
-- Cumprimente de forma calorosa e curta
-- Pergunte como pode ajudar (se a pessoa não disse ainda)
-- Se a pessoa já disse o problema, pule direto para qualificação
-- NÃO peça nome/email ainda, é cedo demais`,
+// Prompt base (personalidade da Ana)
+const SYSTEM_PROMPT_BASE = `Você é a Ana, atendente da Neves Advocacia (Dr. Osmar Neves, tributarista, Belém/PA). Você conversa por WhatsApp igual uma pessoa real.
 
-    avanca: (text, lead) => {
-      // Avança quando identificamos o assunto/problema
-      const lower = text.toLowerCase();
-      const temas = ['isenção', 'isençao', 'imposto', 'aposentad', 'equiparação', 'hospitalar',
-        'clínica', 'clinica', 'tea', 'autis', 'escola', 'terapia', 'trabalhist',
-        'demissão', 'demissao', 'rescisão', 'pensão', 'pensao', 'dúvida', 'duvida',
-        'problema', 'ajuda', 'preciso', 'quero', 'consulta', 'advogado'];
-      return temas.some(t => lower.includes(t));
-    },
-    proxima: ETAPAS.QUALIFICACAO
-  },
+REGRAS ABSOLUTAS:
+- Máximo 2 frases por mensagem
+- Zero listas, zero bullet points
+- 1 pergunta por vez
+- Use as palavras que a pessoa usou
+- Nunca pergunte o que já foi dito
+- Leia os DADOS DO LEAD antes de responder
 
-  [ETAPAS.QUALIFICACAO]: {
-    instrucao: `ETAPA ATUAL: QUALIFICAÇÃO
-Seu objetivo agora: entender os detalhes do problema da pessoa.
-- Faça UMA pergunta por vez sobre a situação específica
-- Use as palavras que a pessoa usou (se falou "escola", fale "escola")
-- Entenda: quem é afetado, há quanto tempo, qual a situação atual
-- Quando tiver entendido o problema, mostre que tem solução
-- Agora sim peça o NOME se ainda não tem`,
+ÁREAS: IR Isenção (aposentados doentes), Equiparação Hospitalar (clínicas), TEA/Tema 324 (escola, terapia, tudo sobre dependentes TEA), Trabalhista.
 
-    avanca: (text, lead) => {
-      // Avança quando temos o nome e já falamos sobre o problema
-      if (lead && lead.nome && !lead.nome.startsWith('WhatsApp')) {
-        return true;
+INFO: Consultas Seg-Sex 9h-18h, presencial ou online. Você atende 24h. Preço só na consulta.
+
+EXEMPLOS DE COMO RESPONDER:
+
+Lead: "oi, queria saber sobre isenção de imposto de renda"
+Ana: "Oi! O Dr. Osmar é especialista nisso. Você é aposentado ou pensionista?"
+
+Lead: "sou aposentado e tenho diabetes"
+Ana: "Diabetes dá direito sim à isenção, já tivemos vários casos parecidos que deram certo. Qual seu nome?"
+
+Lead: "João Silva"
+Ana: "Prazer, João! Me passa seu email que te mando os detalhes da consulta?"
+
+Lead: "joao@email.com"
+Ana: "Anotado! Que tal quarta às 14h com o Dr. Osmar? Pode ser presencial ou online."
+
+Lead: "meu filho tem autismo e gasto muito com escola especial"
+Ana: "Esses gastos com escola do seu filho podem ser deduzidos no IR, tem decisão judicial sobre isso. Quer agendar uma consulta pra ver quanto dá pra recuperar?"
+
+Lead: "quanto custa a consulta?"
+Ana: "O valor a gente combina na própria consulta, sem compromisso. Posso te encaixar essa semana ainda, quer?"`;
+
+// Cache de resumos de conversas longas
+const summaryCache = new Map();
+
+// Cortar mensagens longas (protegendo abreviações em PT-BR)
+function trimResponse(text) {
+  let clean = text.replace(/^[\s]*[-•·*]\s*/gm, '').replace(/^[\s]*\d+[.)]\s*/gm, '');
+  clean = clean.replace(/\n{2,}/g, '\n').trim();
+
+  const protected_ = clean
+    .replace(/\b(Dr|Dra|Sr|Sra|Prof|Art|Inc|Ltd|Ltda|nº|tel)\./gi, '$1\u0000')
+    .replace(/(\d)\./g, '$1\u0000')
+    .replace(/\.{3}/g, '\u0001');
+
+  const sentences = protected_.match(/[^.!?]+[.!?]+/g) || [protected_];
+  const restored = sentences.map(s => s.replace(/\u0000/g, '.').replace(/\u0001/g, '...'));
+
+  const result = restored.slice(0, 3).join(' ').trim();
+  if (result.length > 300) {
+    return restored.slice(0, 2).join(' ').trim();
+  }
+  return result;
+}
+
+// Construir histórico inteligente (com resumo para conversas longas)
+async function buildSmartHistory(history, conversaId) {
+  if (history.length <= 40) {
+    return history.map(m => ({ role: m.role, content: m.content }));
+  }
+
+  const recentMsgs = history.slice(-30);
+  const oldMsgs = history.slice(0, -30);
+
+  const cached = summaryCache.get(conversaId);
+  let summary;
+
+  if (cached && cached.msgCount >= oldMsgs.length - 2) {
+    summary = cached.summary;
+  } else {
+    const oldText = oldMsgs.map(m => `${m.role === 'user' ? 'Lead' : 'Ana'}: ${m.content}`).join('\n');
+    try {
+      const res = await anthropic.messages.create({
+        model: config.CLAUDE_MODEL,
+        max_tokens: 500,
+        system: 'Você extrai dados-chave de conversas. Responda APENAS com os dados encontrados, sem explicação. Seja detalhado.',
+        messages: [{ role: 'user', content: `Extraia desta conversa TUDO que for relevante: nome do lead, problema/tese jurídica, email, telefone, dia/horário mencionado, preferências (presencial/online), detalhes pessoais (doença, situação do dependente, tipo de empresa), e qualquer informação que não pode ser esquecida. Se não encontrou, omita.\n\n${oldText}` }]
+      });
+      summary = res.content[0].text;
+    } catch (e) {
+      summary = extractKeyInfoFallback(oldMsgs);
+    }
+
+    if (conversaId) {
+      summaryCache.set(conversaId, { msgCount: oldMsgs.length, summary });
+      if (summaryCache.size > 100) {
+        const oldest = summaryCache.keys().next().value;
+        summaryCache.delete(oldest);
       }
-      // Ou se o lead demonstrou interesse claro
-      const lower = text.toLowerCase();
-      return lower.includes('como funciona') || lower.includes('quanto custa') ||
-             lower.includes('como faz') || lower.includes('quero saber mais');
-    },
-    proxima: ETAPAS.PROPOSTA
-  },
-
-  [ETAPAS.PROPOSTA]: {
-    instrucao: `ETAPA ATUAL: PROPOSTA DE VALOR
-Seu objetivo agora: mostrar que o Dr. Osmar resolve isso e gerar urgência.
-- Diga em 1 frase que tem solução pro caso da pessoa
-- Use gatilho: "Caso parecido deu muito certo" ou "Cada mês sem resolver é dinheiro perdido"
-- Peça o EMAIL se ainda não tem
-- Se já tem nome e email, proponha dia e horário para consulta
-- Exemplo: "Que tal quarta às 14h com o Dr. Osmar? Pode ser online se preferir"`,
-
-    avanca: (text, lead) => {
-      // Avança quando mencionam dia/horário ou aceitam agendar
-      const lower = text.toLowerCase();
-      const sinaisAgendamento = ['pode ser', 'vamos', 'quero agendar', 'marca', 'agenda',
-        'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'amanhã', 'hoje',
-        'de manhã', 'à tarde', 'horário', 'bora', 'fechado', 'combinado'];
-      return sinaisAgendamento.some(s => lower.includes(s));
-    },
-    proxima: ETAPAS.AGENDAMENTO
-  },
-
-  [ETAPAS.AGENDAMENTO]: {
-    instrucao: '', // Preenchido dinamicamente com horários reais via getInstrucaoAgendamento()
-    instrucaoDinamica: true, // Flag para indicar que precisa de dados do calendar
-
-    avanca: (text, lead) => {
-      // Avança quando a consulta foi confirmada
-      const lower = text.toLowerCase();
-      return lower.includes('ok') || lower.includes('combinado') || lower.includes('fechado') ||
-             lower.includes('perfeito') || lower.includes('confirmado') || lower.includes('pode ser') ||
-             lower.includes('online') || lower.includes('presencial');
-    },
-    proxima: ETAPAS.POS_AGENDAMENTO
-  },
-
-  [ETAPAS.POS_AGENDAMENTO]: {
-    instrucao: `ETAPA ATUAL: PÓS-AGENDAMENTO
-A consulta já foi agendada. Seu objetivo agora:
-- Seja simpática e disponível
-- Se perguntarem algo, responda normalmente
-- Se quiserem remarcar, ajude
-- Não tente vender de novo, a pessoa já é cliente
-- Finalize com: "Qualquer dúvida antes da consulta, me chama aqui!"`,
-
-    avanca: () => false, // Etapa final, não avança
-    proxima: null
-  }
-};
-
-// Obter a etapa atual de uma conversa
-function getEtapa(conversaId) {
-  return conversaEtapas.get(conversaId) || ETAPAS.SAUDACAO;
-}
-
-// Definir etapa (usado ao carregar do banco)
-function setEtapa(conversaId, etapa) {
-  if (FLUXO[etapa]) {
-    conversaEtapas.set(conversaId, etapa);
-  }
-}
-
-// Processar transição de etapa com base na mensagem do lead
-function processarEtapa(conversaId, text, lead) {
-  const etapaAtual = getEtapa(conversaId);
-  const fluxo = FLUXO[etapaAtual];
-
-  if (!fluxo) return etapaAtual;
-
-  // Verificar se deve avançar
-  if (fluxo.avanca(text, lead) && fluxo.proxima) {
-    const novaEtapa = fluxo.proxima;
-    conversaEtapas.set(conversaId, novaEtapa);
-    console.log(`[FLUXO] ${conversaId}: ${etapaAtual} → ${novaEtapa}`);
-    return novaEtapa;
+    }
   }
 
-  return etapaAtual;
-}
+  const summaryMsg = {
+    role: 'user',
+    content: `[DADOS DO LEAD - use estas informações, nunca pergunte de novo]\n${summary}\n[FIM DOS DADOS]`
+  };
 
-// Obter a instrução do prompt para a etapa atual
-// Para etapa de agendamento, usa horários reais (async)
-async function getInstrucaoEtapa(conversaId, horariosTexto) {
-  const etapa = getEtapa(conversaId);
-  const fluxo = FLUXO[etapa];
+  const recent = recentMsgs.map(m => ({ role: m.role, content: m.content }));
 
-  if (!fluxo) return FLUXO[ETAPAS.SAUDACAO].instrucao;
-
-  // Etapa de agendamento: injetar horários reais
-  if (fluxo.instrucaoDinamica && horariosTexto) {
-    return `ETAPA ATUAL: AGENDAMENTO
-Seu objetivo agora: confirmar dia, horário e formato da consulta.
-
-HORÁRIOS DISPONÍVEIS DO DR. OSMAR (consulte a agenda real):
-${horariosTexto}
-
-- Ofereça 2 ou 3 desses horários para a pessoa escolher
-- Pergunte se prefere presencial (Belém/PA) ou online
-- Se ainda não tem email, peça agora
-- Quando confirmar: "Perfeito! Consulta marcada pra [dia] às [hora], [formato]. O Dr. Osmar vai te atender!"
-- NUNCA invente horários, use SOMENTE os listados acima`;
+  if (recent.length > 0 && recent[0].role === 'user') {
+    return [summaryMsg, { role: 'assistant', content: 'Ok, tenho os dados do lead.' }, ...recent];
   }
 
-  return fluxo.instrucao || FLUXO[ETAPAS.SAUDACAO].instrucao;
+  return [summaryMsg, ...recent];
 }
 
-// Limpar cache de conversas antigas (chamado periodicamente)
-function cleanup() {
-  if (conversaEtapas.size > 500) {
-    const keys = [...conversaEtapas.keys()];
-    // Remover as 200 mais antigas
-    keys.slice(0, 200).forEach(k => conversaEtapas.delete(k));
+// Fallback: extração manual sem IA
+function extractKeyInfoFallback(messages) {
+  const allText = messages.map(m => m.content).join(' ');
+  const info = [];
+
+  const nomeMatch = allText.match(/(?:me chamo|meu nome é|sou o |sou a |meu nome:|nome:)\s*([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+)*)/i);
+  if (nomeMatch) info.push(`Nome: ${nomeMatch[1]}`);
+
+  const emailMatch = allText.match(/[\w.-]+@[\w.-]+\.\w+/);
+  if (emailMatch) info.push(`Email: ${emailMatch[0]}`);
+
+  const teses = ['isenção', 'imposto de renda', 'equiparação', 'hospitalar', 'tea', 'autismo', 'trabalhista'];
+  const teseFound = teses.filter(t => allText.toLowerCase().includes(t));
+  if (teseFound.length) info.push(`Interesse: ${teseFound.join(', ')}`);
+
+  const diaMatch = allText.match(/(?:segunda|terça|quarta|quinta|sexta|sábado|amanhã|hoje)\s*(?:às?\s*)?(\d{1,2}[h:]?\d{0,2})?/gi);
+  if (diaMatch) info.push(`Horário mencionado: ${diaMatch[diaMatch.length - 1]}`);
+
+  return info.length > 0 ? info.join('\n') : 'Nenhum dado específico extraído ainda.';
+}
+
+// Gerar resposta da Ana
+async function generateResponse(history, userMessage, conversaId) {
+  const smartHistory = await buildSmartHistory(history, conversaId);
+
+  // Buscar horários reais se estiver na etapa de agendamento ou proposta
+  let horariosTexto = null;
+  const etapaAtual = fluxo.getEtapa(conversaId);
+  if (etapaAtual === 'agendamento' || etapaAtual === 'proposta') {
+    try {
+      const calendar = require('./calendar');
+      const { texto, slots } = await calendar.sugerirHorarios(3);
+      if (slots.length > 0) {
+        horariosTexto = slots.map(s => `- ${s.label}`).join('\n');
+      }
+    } catch (e) {
+      console.log('[IA] Calendar não disponível:', e.message);
+    }
+  }
+
+  // Montar prompt com instrução da etapa atual (+ horários se disponíveis)
+  const instrucaoEtapa = await fluxo.getInstrucaoEtapa(conversaId, horariosTexto);
+  const systemPrompt = `${SYSTEM_PROMPT_BASE}\n\n${instrucaoEtapa}`;
+
+  const messages = [
+    ...smartHistory,
+    { role: 'user', content: userMessage }
+  ];
+
+  // Garantir alternância correta de roles
+  const cleanMessages = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    const prev = cleanMessages[cleanMessages.length - 1];
+    if (prev && prev.role === msg.role) {
+      prev.content += '\n' + msg.content;
+    } else {
+      cleanMessages.push({ ...msg });
+    }
+  }
+
+  if (cleanMessages.length > 0 && cleanMessages[0].role !== 'user') {
+    cleanMessages.unshift({ role: 'user', content: 'Olá' });
+  }
+
+  try {
+    const response = await anthropic.messages.create({
+      model: config.CLAUDE_MODEL,
+      max_tokens: config.MAX_TOKENS,
+      system: systemPrompt,
+      messages: cleanMessages
+    });
+
+    return response.content[0].text;
+  } catch (e) {
+    console.error('[CLAUDE] Erro:', e.message);
+    return 'Desculpe, estou com uma dificuldade técnica. Entre em contato pelo telefone do escritório.';
   }
 }
 
 module.exports = {
-  getEtapa,
-  setEtapa,
-  processarEtapa,
-  getInstrucaoEtapa,
-  cleanup,
-  FLUXO
+  generateResponse,
+  trimResponse
 };

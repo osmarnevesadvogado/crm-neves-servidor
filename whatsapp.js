@@ -44,6 +44,24 @@ async function sendText(phone, text) {
   }
 }
 
+// Enviar áudio pelo WhatsApp (base64)
+async function sendAudio(phone, audioBase64) {
+  try {
+    const res = await fetch(`${config.ZAPI_BASE}/send-audio`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Client-Token': config.ZAPI_CLIENT_TOKEN },
+      body: JSON.stringify({ phone: cleanPhone(phone), audio: audioBase64 })
+    });
+    const json = await res.json();
+    console.log('[ZAPI] Áudio enviado:', phone);
+    markBotSent(phone);
+    return json;
+  } catch (e) {
+    console.error('[ZAPI] Erro ao enviar áudio:', e.message);
+    return null;
+  }
+}
+
 // Notificar Dr. Osmar via WhatsApp sobre lead quente
 async function notifyHotLead(leadName, phone, trigger) {
   const msg = `🔥 LEAD QUENTE!\n\n${leadName} (${phone}) demonstrou interesse alto.\n\nFrase: "${trigger}"\n\nResponda rápido ou a IA continua o atendimento.`;
@@ -72,6 +90,7 @@ module.exports = {
   markBotSent,
   wasBotRecentSend,
   sendText,
+  sendAudio,
   notifyHotLead,
   cleanup
 };

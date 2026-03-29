@@ -366,7 +366,8 @@ app.get('/api/health', (req, res) => {
     services: {
       claude: !!config.ANTHROPIC_API_KEY,
       zapi: !!config.ZAPI_INSTANCE,
-      supabase: !!config.SUPABASE_URL
+      supabase: !!config.SUPABASE_URL,
+      calendar: !!calendar
     }
   });
 });
@@ -377,6 +378,22 @@ app.get('/api/test/zapi', async (req, res) => {
     res.json(await r.json());
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/test/calendar', async (req, res) => {
+  try {
+    if (!calendar) return res.status(500).json({ ok: false, error: 'Módulo calendar não carregado' });
+    const slots = await calendar.getHorariosDisponiveis(3);
+    const sugestao = await calendar.sugerirHorarios(2);
+    res.json({
+      ok: true,
+      slotsDisponiveis: slots.length,
+      proximosHorarios: slots.slice(0, 5).map(s => s.label),
+      sugestaoAna: sugestao.texto
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
@@ -453,6 +470,7 @@ app.listen(config.PORT, () => {
   console.log(`Claude: ${config.ANTHROPIC_API_KEY ? 'OK' : 'Faltando'}`);
   console.log(`Z-API: ${config.ZAPI_INSTANCE ? 'OK' : 'Faltando'}`);
   console.log(`Supabase: ${config.SUPABASE_URL ? 'OK' : 'Faltando'}`);
+  console.log(`Calendar: ${calendar ? 'OK' : 'Não configurado'}`);
   console.log(`Webhook: POST ${config.RENDER_URL || 'http://localhost:' + config.PORT}/webhook/zapi`);
   console.log('');
 });

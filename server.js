@@ -9,6 +9,8 @@ const whatsapp = require('./whatsapp');
 const db = require('./database');
 const ia = require('./ia');
 const fluxo = require('./fluxo');
+let calendar;
+try { calendar = require('./calendar'); } catch (e) { console.log('[INIT] Calendar não disponível'); }
 
 const app = express();
 app.use(cors());
@@ -137,6 +139,29 @@ async function processBufferedMessage(phone, text, senderName) {
     if (etapaAntes !== etapaDepois) {
       await db.updateConversa(conversa.id, { etapa_conversa: etapaDepois });
       await db.trackEvent(conversa.id, lead?.id, 'etapa_avancou', `${etapaAntes} → ${etapaDepois}`);
+
+      // Se avançou para pós-agendamento, tentar criar evento no Google Calendar
+      if (etapaDepois === 'pos_agendamento' && calendar) {
+        try {
+          const slot = await calendar.encontrarSlot(combinedText);
+          if (slot && leadAtualizado) {
+            const evento = await calendar.criarConsulta(
+              leadAtualizado.nome || finalName || 'Lead',
+              phone,
+              leadAtualizado.email || '',
+              slot.inicio,
+              combinedText.toLowerCase().includes('presencial') ? 'presencial' : 'online'
+            );
+            if (evento) {
+              await db.trackEvent(conversa.id, lead?.id, 'consulta_agendada', evento.inicio);
+              await db.updateLead(lead.id, { etapa_funil: 'convertido' });
+              console.log(`[CALENDAR] Consulta agendada: ${evento.inicio}`);
+            }
+          }
+        } catch (e) {
+          console.error('[CALENDAR] Erro ao agendar:', e.message);
+        }
+      }
     }
 
     // Detectar lead quente

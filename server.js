@@ -172,9 +172,9 @@ async function processBufferedMessage(phone, text, senderName) {
       await db.trackEvent(conversa.id, lead.id, 'lead_quente', combinedText.slice(0, 100));
     }
 
-    // Gerar e enviar resposta
+    // Gerar e enviar resposta (passa lead atualizado para a IA montar a ficha)
     const history = await db.getHistory(conversa.id);
-    const rawReply = await ia.generateResponse(history, combinedText, conversa.id);
+    const rawReply = await ia.generateResponse(history, combinedText, conversa.id, leadAtualizado);
     const reply = ia.trimResponse(rawReply);
     await db.saveMessage(conversa.id, 'assistant', reply);
     await whatsapp.sendText(phone, reply);
@@ -470,7 +470,6 @@ app.listen(config.PORT, () => {
   console.log(`Claude: ${config.ANTHROPIC_API_KEY ? 'OK' : 'Faltando'}`);
   console.log(`Z-API: ${config.ZAPI_INSTANCE ? 'OK' : 'Faltando'}`);
   console.log(`Supabase: ${config.SUPABASE_URL ? 'OK' : 'Faltando'}`);
-  console.log(`Calendar: ${calendar ? 'OK' : 'Não configurado'}`);
   console.log(`Webhook: POST ${config.RENDER_URL || 'http://localhost:' + config.PORT}/webhook/zapi`);
   console.log('');
 });

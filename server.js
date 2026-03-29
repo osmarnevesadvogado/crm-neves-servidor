@@ -17,28 +17,40 @@ const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_CLIENT_TOKEN = process.env.ZAPI_CLIENT_TOKEN;
 const ZAPI_BASE = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}`;
 
-const SYSTEM_PROMPT = `Você é a Ana, atendente da Neves Advocacia (Dr. Osmar Neves, tributarista, Belém/PA). Você conversa por WhatsApp igual uma pessoa real: frases curtas, diretas, sem frescura.
+const SYSTEM_PROMPT = `Você é a Ana, atendente da Neves Advocacia (Dr. Osmar Neves, tributarista, Belém/PA). Você conversa por WhatsApp igual uma pessoa real.
 
-COMO VOCÊ FALA:
-- 1 a 2 frases por mensagem, no máximo
-- Zero listas, zero bullet points, zero numeração
-- 1 pergunta por vez, nunca mais
-- Fala como gente, não como robô
+REGRAS ABSOLUTAS:
+- Máximo 2 frases por mensagem
+- Zero listas, zero bullet points
+- 1 pergunta por vez
+- Use as palavras que a pessoa usou
+- Nunca pergunte o que já foi dito
+- Leia os DADOS DO LEAD antes de responder
 
-COMO VOCÊ ESCUTA:
-- Repete as palavras que a pessoa usou (falou "escola", você fala "escola")
-- Nunca pergunta o que já foi dito
-- Lê TUDO que veio antes e usa
+ÁREAS: IR Isenção (aposentados doentes), Equiparação Hospitalar (clínicas), TEA/Tema 324 (escola, terapia, tudo sobre dependentes TEA), Trabalhista.
 
-COMO VOCÊ VENDE:
-- Entendeu o problema? Mostra que tem solução em 1 frase
-- Pede nome e email
-- Propõe dia e hora: "Que tal terça 14h ou quarta 10h com o Dr. Osmar?"
-- Gatilhos: "Caso parecido deu muito certo" / "Ainda tem vaga essa semana" / "Cada mês sem resolver é dinheiro perdido"
+INFO: Consultas Seg-Sex 9h-18h, presencial ou online. Você atende 24h. Preço só na consulta.
 
-ÁREAS: IR Isenção (aposentados doentes), Equiparação Hospitalar (clínicas), TEA/Tema 324 (gastos com dependentes TEA: escola, terapia, tudo), Trabalhista.
+EXEMPLOS DE COMO RESPONDER:
 
-REGRAS: Consultas Seg-Sex 9h-18h, presencial ou online. Você atende 24h. Preço só na consulta. Releia o histórico todo antes de responder.`;
+Lead: "oi, queria saber sobre isenção de imposto de renda"
+Ana: "Oi! O Dr. Osmar é especialista nisso. Você é aposentado ou pensionista?"
+
+Lead: "sou aposentado e tenho diabetes"
+Ana: "Diabetes dá direito sim à isenção, já tivemos vários casos parecidos que deram certo. Qual seu nome?"
+
+Lead: "João Silva"
+Ana: "Prazer, João! Me passa seu email que te mando os detalhes da consulta?"
+
+Lead: "joao@email.com"
+Ana: "Anotado! Que tal quarta às 14h com o Dr. Osmar? Pode ser presencial ou online."
+
+Lead: "meu filho tem autismo e gasto muito com escola especial"
+Ana: "Esses gastos com escola do seu filho podem ser deduzidos no IR, tem decisão judicial sobre isso. Quer agendar uma consulta pra ver quanto dá pra recuperar?"
+
+Lead: "quanto custa a consulta?"
+Ana: "O valor a gente combina na própria consulta, sem compromisso. Posso te encaixar essa semana ainda, quer?"`;
+
 
 // Palavras que indicam lead quente (interesse em agendar/contratar)
 const HOT_LEAD_KEYWORDS = [
@@ -66,15 +78,27 @@ function cleanPhone(phone) {
 function trimResponse(text) {
   // Remover bullet points e listas
   let clean = text.replace(/^[\s]*[-•·*]\s*/gm, '').replace(/^[\s]*\d+[.)]\s*/gm, '');
-  // Remover linhas vazias extras
+  // Remover linhas vazias extras e emojis sozinhos em linha
   clean = clean.replace(/\n{2,}/g, '\n').trim();
-  // Separar em frases
-  const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+
+  // Proteger abreviações e valores antes de separar frases
+  // Substituir pontos que NÃO são fim de frase por placeholder
+  const protected_ = clean
+    .replace(/\b(Dr|Dra|Sr|Sra|Prof|Art|Inc|Ltd|Ltda|nº|tel)\./gi, '$1\u0000')  // abreviações
+    .replace(/(\d)\./g, '$1\u0000')  // números decimais (R$1.000, 14.5)
+    .replace(/\.{3}/g, '\u0001');     // reticências → placeholder único
+
+  // Separar em frases pelo ponto/!/? real
+  const sentences = protected_.match(/[^.!?]+[.!?]+/g) || [protected_];
+
+  // Restaurar pontos protegidos
+  const restored = sentences.map(s => s.replace(/\u0000/g, '.').replace(/\u0001/g, '...'));
+
   // Pegar no máximo 3 frases
-  const result = sentences.slice(0, 3).join(' ').trim();
+  const result = restored.slice(0, 3).join(' ').trim();
   // Se ainda ficou muito longo (mais de 300 chars), cortar
   if (result.length > 300) {
-    return sentences.slice(0, 2).join(' ').trim();
+    return restored.slice(0, 2).join(' ').trim();
   }
   return result;
 }
@@ -168,39 +192,94 @@ async function saveMessage(conversaId, role, content) {
 }
 
 // Resumir conversas longas para manter contexto sem estourar tokens
-function buildSmartHistory(history) {
+// Cache de resumos para não resumir a mesma conversa toda vez
+const summaryCache = new Map(); // conversaId -> { msgCount, summary }
+
+async function buildSmartHistory(history, conversaId) {
   // Se a conversa é curta, envia tudo
   if (history.length <= 20) {
     return history.map(m => ({ role: m.role, content: m.content }));
   }
 
-  // Conversa longa: extrai dados importantes das mensagens antigas
-  const oldMsgs = history.slice(0, -16);
-  const recentMsgs = history.slice(-16);
+  const recentMsgs = history.slice(-12);
+  const oldMsgs = history.slice(0, -12);
 
-  // Coleta informações-chave mencionadas nas mensagens antigas
-  const allOldText = oldMsgs.map(m => `[${m.role}]: ${m.content}`).join('\n');
+  // Verificar se já temos um resumo cacheado para este tamanho de conversa
+  const cached = summaryCache.get(conversaId);
+  let summary;
+
+  if (cached && cached.msgCount >= oldMsgs.length - 2) {
+    // Cache válido (tolerância de 2 msgs novas)
+    summary = cached.summary;
+  } else {
+    // Gerar resumo real via Claude (usando modelo barato e rápido)
+    const oldText = oldMsgs.map(m => `${m.role === 'user' ? 'Lead' : 'Ana'}: ${m.content}`).join('\n');
+    try {
+      const res = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 200,
+        system: 'Você extrai dados-chave de conversas. Responda APENAS com os dados encontrados, sem explicação.',
+        messages: [{ role: 'user', content: `Extraia desta conversa: nome do lead, problema/tese jurídica, email, telefone, dia/horário mencionado, qualquer informação pessoal relevante. Se não encontrou, omita.\n\n${oldText}` }]
+      });
+      summary = res.content[0].text;
+    } catch (e) {
+      // Fallback: extrair dados-chave manualmente
+      summary = extractKeyInfo(oldMsgs);
+    }
+
+    // Cachear
+    if (conversaId) {
+      summaryCache.set(conversaId, { msgCount: oldMsgs.length, summary });
+      // Limpar cache antigo (máx 100 conversas)
+      if (summaryCache.size > 100) {
+        const oldest = summaryCache.keys().next().value;
+        summaryCache.delete(oldest);
+      }
+    }
+  }
 
   const summaryMsg = {
     role: 'user',
-    content: `[CONTEXTO DA CONVERSA ANTERIOR - Lembre-se destas informações]\n${allOldText}\n[FIM DO CONTEXTO - Continue a conversa normalmente sem repetir o que já foi dito]`
+    content: `[DADOS DO LEAD - use estas informações, nunca pergunte de novo]\n${summary}\n[FIM DOS DADOS]`
   };
 
-  // Garantir que a sequência comece com 'user' (regra da API)
   const recent = recentMsgs.map(m => ({ role: m.role, content: m.content }));
 
-  // Se o resumo vai como 'user' e a primeira mensagem recente também é 'user',
-  // precisamos intercalar com uma resposta do assistant
   if (recent.length > 0 && recent[0].role === 'user') {
-    return [summaryMsg, { role: 'assistant', content: 'Entendido, tenho todas as informações da conversa anterior.' }, ...recent];
+    return [summaryMsg, { role: 'assistant', content: 'Ok, tenho os dados do lead.' }, ...recent];
   }
 
   return [summaryMsg, ...recent];
 }
 
+// Fallback: extração manual de dados-chave (sem chamar IA)
+function extractKeyInfo(messages) {
+  const allText = messages.map(m => m.content).join(' ');
+  const info = [];
+
+  // Nome (padrão: "me chamo X", "meu nome é X", "sou o/a X")
+  const nomeMatch = allText.match(/(?:me chamo|meu nome é|sou o |sou a |meu nome:|nome:)\s*([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+)*)/i);
+  if (nomeMatch) info.push(`Nome: ${nomeMatch[1]}`);
+
+  // Email
+  const emailMatch = allText.match(/[\w.-]+@[\w.-]+\.\w+/);
+  if (emailMatch) info.push(`Email: ${emailMatch[0]}`);
+
+  // Tese/problema mencionado
+  const teses = ['isenção', 'imposto de renda', 'equiparação', 'hospitalar', 'tea', 'autismo', 'trabalhista', 'pensão', 'aposentadoria'];
+  const teseFound = teses.filter(t => allText.toLowerCase().includes(t));
+  if (teseFound.length) info.push(`Interesse: ${teseFound.join(', ')}`);
+
+  // Dia/horário
+  const diaMatch = allText.match(/(?:segunda|terça|quarta|quinta|sexta|sábado|amanhã|hoje)\s*(?:às?\s*)?(\d{1,2}[h:]?\d{0,2})?/gi);
+  if (diaMatch) info.push(`Horário mencionado: ${diaMatch[diaMatch.length - 1]}`);
+
+  return info.length > 0 ? info.join('\n') : 'Nenhum dado específico extraído ainda.';
+}
+
 // Gerar resposta com Claude
-async function generateResponse(history, userMessage) {
-  const smartHistory = buildSmartHistory(history);
+async function generateResponse(history, userMessage, conversaId) {
+  const smartHistory = await buildSmartHistory(history, conversaId);
   const messages = [
     ...smartHistory,
     { role: 'user', content: userMessage }
@@ -227,7 +306,7 @@ async function generateResponse(history, userMessage) {
   try {
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 150,
+      max_tokens: 200,
       system: SYSTEM_PROMPT,
       messages: cleanMessages
     });
@@ -258,6 +337,53 @@ async function notifyHotLead(leadName, phone, trigger) {
     console.log(`[HOT] Notificação enviada para Dr. Osmar sobre ${leadName}`);
   } catch (e) {
     console.error('[HOT] Erro ao notificar:', e.message);
+  }
+}
+
+// Extrair dados do lead automaticamente das mensagens
+async function extractAndUpdateLead(leadId, text) {
+  if (!leadId || !text) return;
+  const updates = {};
+
+  // Extrair email
+  const emailMatch = text.match(/[\w.-]+@[\w.-]+\.\w{2,}/);
+  if (emailMatch) updates.email = emailMatch[0];
+
+  // Extrair nome (padrões comuns em português)
+  const nomePatterns = [
+    /(?:me chamo|meu nome é|sou o |sou a |pode me chamar de )\s*([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+){0,3})/i,
+    /(?:^|\n)([A-ZÀ-Ú][a-zà-ú]+ [A-ZÀ-Ú][a-zà-ú]+)(?:\s*$)/m // nome próprio sozinho na linha
+  ];
+  for (const pattern of nomePatterns) {
+    const match = text.match(pattern);
+    if (match && match[1].length > 3 && match[1].length < 50) {
+      updates.nome = match[1].trim();
+      break;
+    }
+  }
+
+  // Detectar tese de interesse
+  const lower = text.toLowerCase();
+  if (!updates.tese_interesse) {
+    if (lower.includes('isenção') || lower.includes('isençao') || lower.includes('imposto de renda') || lower.includes('aposentad'))
+      updates.tese_interesse = 'IR Isenção';
+    else if (lower.includes('equiparação') || lower.includes('hospitalar') || lower.includes('clínica') || lower.includes('clinica'))
+      updates.tese_interesse = 'Equiparação Hospitalar';
+    else if (lower.includes('tea') || lower.includes('autis') || lower.includes('escola especial') || lower.includes('terapia') || lower.includes('tema 324'))
+      updates.tese_interesse = 'TEA/Tema 324';
+    else if (lower.includes('trabalhist') || lower.includes('demissão') || lower.includes('demissao') || lower.includes('rescisão'))
+      updates.tese_interesse = 'Trabalhista';
+  }
+
+  // Só atualizar se encontrou algo novo
+  if (Object.keys(updates).length > 0) {
+    updates.atualizado_em = new Date().toISOString();
+    try {
+      await supabase.from('leads').update(updates).eq('id', leadId);
+      console.log(`[LEAD] Dados atualizados para ${leadId}:`, Object.keys(updates).join(', '));
+    } catch (e) {
+      console.error('[LEAD] Erro ao atualizar dados:', e.message);
+    }
   }
 }
 
@@ -292,29 +418,47 @@ async function trackEvent(conversaId, leadId, evento, detalhes) {
 // Verifica leads que pararam de responder e envia follow-up
 async function checkFollowUps() {
   try {
-    // Buscar conversas ativas que não tiveram mensagem do lead nas últimas 24h
+    // Buscar conversas ativas com leads que não sejam convertidos/perdidos
     const { data: conversas } = await supabase
       .from('conversas')
-      .select('*, leads(id, nome, tese_interesse, etapa_funil, telefone)')
+      .select('id, telefone, lead_id, leads(id, nome, tese_interesse, etapa_funil, telefone)')
       .eq('status', 'ativa')
       .not('lead_id', 'is', null);
 
     if (!conversas || conversas.length === 0) return;
 
+    // Filtrar leads elegíveis
+    const eligible = conversas.filter(c =>
+      c.leads && c.leads.etapa_funil !== 'convertido' && c.leads.etapa_funil !== 'perdido'
+    );
+
+    if (eligible.length === 0) return;
+
+    // Buscar últimas 3 mensagens de TODAS as conversas elegíveis de uma vez
+    // Usando RPC ou query por conversa_ids (Supabase não suporta GROUP BY fácil, mas podemos filtrar por IDs)
+    const conversaIds = eligible.map(c => c.id);
+    const { data: allMsgs } = await supabase
+      .from('mensagens')
+      .select('conversa_id, role, criado_em')
+      .in('conversa_id', conversaIds)
+      .order('criado_em', { ascending: false })
+      .limit(conversaIds.length * 3); // 3 msgs por conversa no máximo
+
+    if (!allMsgs) return;
+
+    // Agrupar mensagens por conversa (pegando no máximo 3 por conversa)
+    const msgsByConv = {};
+    for (const msg of allMsgs) {
+      if (!msgsByConv[msg.conversa_id]) msgsByConv[msg.conversa_id] = [];
+      if (msgsByConv[msg.conversa_id].length < 3) {
+        msgsByConv[msg.conversa_id].push(msg);
+      }
+    }
+
     const now = Date.now();
 
-    for (const conv of conversas) {
-      // Pular leads já convertidos ou perdidos
-      if (!conv.leads || conv.leads.etapa_funil === 'convertido' || conv.leads.etapa_funil === 'perdido') continue;
-
-      // Buscar última mensagem
-      const { data: lastMsgs } = await supabase
-        .from('mensagens')
-        .select('role, criado_em')
-        .eq('conversa_id', conv.id)
-        .order('criado_em', { ascending: false })
-        .limit(3);
-
+    for (const conv of eligible) {
+      const lastMsgs = msgsByConv[conv.id];
       if (!lastMsgs || lastMsgs.length === 0) continue;
 
       const lastMsg = lastMsgs[0];
@@ -323,13 +467,12 @@ async function checkFollowUps() {
 
       // Se a última mensagem foi da IA (lead não respondeu) e já passaram 24-48h
       if (lastMsg.role === 'assistant' && hoursAgo >= 24 && hoursAgo < 48) {
-        // Verificar se já mandou follow-up (olhando se as últimas 2 msgs são da IA)
-        const lastTwoAssistant = lastMsgs.filter(m => m.role === 'assistant');
-        if (lastTwoAssistant.length >= 2) continue; // Já mandou follow-up
+        const lastAssistantCount = lastMsgs.filter(m => m.role === 'assistant').length;
+        if (lastAssistantCount >= 2) continue; // Já mandou follow-up
 
         const nome = conv.leads.nome || 'amigo(a)';
         const tese = conv.leads.tese_interesse || 'sua questão jurídica';
-        const followUp1 = `Olá, ${nome}! Tudo bem? 😊 Passando aqui porque vi que ficou alguma dúvida sobre ${tese}. O Dr. Osmar ainda tem horários essa semana. Posso te ajudar com algo mais?`;
+        const followUp1 = `Olá, ${nome}! Tudo bem? Passando aqui sobre ${tese}. O Dr. Osmar ainda tem horários essa semana, posso te ajudar?`;
 
         console.log(`[FOLLOWUP-24h] Enviando para ${conv.telefone} (${nome})`);
         await saveMessage(conv.id, 'assistant', followUp1);
@@ -339,21 +482,21 @@ async function checkFollowUps() {
 
       // Follow-up de 72h (último esforço)
       if (lastMsg.role === 'assistant' && hoursAgo >= 72 && hoursAgo < 96) {
-        const lastTwoAssistant = lastMsgs.filter(m => m.role === 'assistant');
-        if (lastTwoAssistant.length >= 3) continue; // Já mandou os 2 follow-ups
+        const lastAssistantCount = lastMsgs.filter(m => m.role === 'assistant').length;
+        if (lastAssistantCount >= 3) continue;
 
         const nome = conv.leads.nome || 'amigo(a)';
         const tese = conv.leads.tese_interesse;
         let followUp2 = '';
 
         if (tese === 'IR Isenção') {
-          followUp2 = `${nome}, só pra lembrar: enquanto não entra com o pedido, o imposto continua sendo descontado todo mês. Se quiser, o Dr. Osmar pode fazer uma análise rápida do seu caso, sem compromisso. É só me chamar! 🙏`;
+          followUp2 = `${nome}, enquanto não entra com o pedido, o imposto continua sendo descontado. O Dr. Osmar pode analisar sem compromisso, é só me chamar!`;
         } else if (tese === 'Equiparação Hospitalar') {
-          followUp2 = `${nome}, sua clínica pode estar pagando até 4x mais imposto do que deveria. O Dr. Osmar pode avaliar isso em uma consulta rápida, sem compromisso. Me avisa se tiver interesse! 🙏`;
+          followUp2 = `${nome}, sua clínica pode estar pagando até 4x mais imposto. O Dr. Osmar avalia sem compromisso, me avisa se tiver interesse!`;
         } else if (tese === 'TEA/Tema 324') {
-          followUp2 = `${nome}, lembrete: as despesas com terapias do seu dependente podem ser deduzidas no IR. O Dr. Osmar pode analisar quanto você pode recuperar. Sem compromisso! Me chama quando puder 🙏`;
+          followUp2 = `${nome}, os gastos com seu dependente podem ser deduzidos no IR. O Dr. Osmar pode ver quanto dá pra recuperar, me chama quando puder!`;
         } else {
-          followUp2 = `${nome}, caso mude de ideia, estamos à disposição. O Dr. Osmar pode fazer uma análise inicial do seu caso sem compromisso. É só me chamar aqui! 🙏`;
+          followUp2 = `${nome}, caso mude de ideia, estamos à disposição. O Dr. Osmar pode fazer uma análise inicial sem compromisso!`;
         }
 
         console.log(`[FOLLOWUP-72h] Enviando para ${conv.telefone} (${nome})`);
@@ -381,35 +524,44 @@ setInterval(() => {
 setTimeout(() => checkFollowUps(), 60 * 1000);
 
 // ===== BUFFER DE MENSAGENS (espera lead terminar de digitar) =====
-const messageBuffer = new Map(); // telefone -> { messages: [], timer: null, senderName: '' }
+const messageBuffer = new Map(); // telefone -> { messages: [], timer: null, senderName: '', resolve: null }
 const BUFFER_DELAY = 8000; // 8 segundos de espera
 
 function bufferMessage(phone, text, senderName) {
-  return new Promise((resolve) => {
-    const cleanP = cleanPhone(phone);
-    const existing = messageBuffer.get(cleanP) || { messages: [], timer: null, senderName: '' };
+  const cleanP = cleanPhone(phone);
+  const existing = messageBuffer.get(cleanP);
 
-    // Adicionar mensagem ao buffer
+  if (existing) {
+    // Já existe buffer para este telefone — só acumula
     existing.messages.push(text);
     existing.senderName = senderName || existing.senderName;
+    // Reinicia o timer (mais 8 segundos)
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => flushBuffer(cleanP), BUFFER_DELAY);
+    // Retorna null = "não processe, já tem alguém esperando"
+    return Promise.resolve(null);
+  }
 
-    // Cancelar timer anterior
-    if (existing.timer) clearTimeout(existing.timer);
+  // Primeira mensagem deste telefone — cria buffer e retorna Promise que resolve quando o timer disparar
+  return new Promise((resolve) => {
+    const entry = {
+      messages: [text],
+      senderName: senderName || '',
+      timer: setTimeout(() => flushBuffer(cleanP), BUFFER_DELAY),
+      resolve // guardar a função resolve para chamar quando o timer disparar
+    };
+    messageBuffer.set(cleanP, entry);
+  });
+}
 
-    // Novo timer: após 8 segundos sem novas mensagens, processa tudo
-    existing.timer = setTimeout(() => {
-      const combined = existing.messages.join('\n');
-      const name = existing.senderName;
-      messageBuffer.delete(cleanP);
-      resolve({ combined, senderName: name, shouldProcess: true });
-    }, BUFFER_DELAY);
-
-    messageBuffer.set(cleanP, existing);
-
-    // Se não é a primeira mensagem, resolve sem processar (o timer anterior cuida)
-    if (existing.messages.length > 1) {
-      resolve({ shouldProcess: false });
-    }
+function flushBuffer(cleanP) {
+  const entry = messageBuffer.get(cleanP);
+  if (!entry) return;
+  messageBuffer.delete(cleanP);
+  // Resolve a Promise da primeira mensagem com todas as mensagens combinadas
+  entry.resolve({
+    combined: entry.messages.join('\n'),
+    senderName: entry.senderName
   });
 }
 
@@ -418,8 +570,19 @@ const processedMessages = new Set();
 const pausedConversas = new Map(); // telefone -> timestamp da pausa
 const recentBotSends = new Map(); // telefone -> timestamp do último envio da IA
 
-// Limpar mensagens processadas a cada 10 minutos (evitar vazamento de memória)
-setInterval(() => { processedMessages.clear(); }, 10 * 60 * 1000);
+// Limpar caches a cada 10 minutos (evitar vazamento de memória)
+setInterval(() => {
+  processedMessages.clear();
+  // Limpar recentBotSends com mais de 2 minutos
+  const now = Date.now();
+  for (const [phone, ts] of recentBotSends) {
+    if (now - ts > 120000) recentBotSends.delete(phone);
+  }
+  // Limpar pausas expiradas
+  for (const [phone, until] of pausedConversas) {
+    if (now > until) pausedConversas.delete(phone);
+  }
+}, 10 * 60 * 1000);
 
 // Registrar que a IA acabou de enviar mensagem para este telefone
 function markBotSent(phone) {
@@ -449,9 +612,44 @@ function isAIPaused(phone) {
   return true;
 }
 
+// ===== SEGURANÇA DO WEBHOOK =====
+
+// Rate limit simples por IP (máx 30 requests por minuto)
+const rateLimitMap = new Map();
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip) || { count: 0, resetAt: now + 60000 };
+  if (now > entry.resetAt) {
+    entry.count = 0;
+    entry.resetAt = now + 60000;
+  }
+  entry.count++;
+  rateLimitMap.set(ip, entry);
+  return entry.count <= 30;
+}
+// Limpar rate limit a cada 5 minutos
+setInterval(() => { rateLimitMap.clear(); }, 5 * 60 * 1000);
+
 // ===== WEBHOOK Z-API (recebe mensagens do WhatsApp) =====
 app.post('/webhook/zapi', async (req, res) => {
   try {
+    // Rate limit
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    if (!checkRateLimit(clientIp)) {
+      console.warn(`[RATE] Rate limit excedido para ${clientIp}`);
+      return res.status(429).json({ error: 'Too many requests' });
+    }
+
+    // Validar token Z-API (se configurado)
+    const zapiWebhookToken = process.env.ZAPI_WEBHOOK_TOKEN;
+    if (zapiWebhookToken) {
+      const receivedToken = req.headers['x-api-key'] || req.headers['authorization'] || req.query.token;
+      if (receivedToken !== zapiWebhookToken) {
+        console.warn(`[AUTH] Token inválido no webhook de ${clientIp}`);
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    }
+
     const body = req.body;
 
     // Extrair ID da mensagem para evitar duplicatas
@@ -498,9 +696,14 @@ app.post('/webhook/zapi', async (req, res) => {
 
     // Verificar se IA está pausada para este telefone
     if (isAIPaused(phone)) {
-      console.log(`[PAUSE] Mensagem de ${phone} ignorada - IA pausada (Dr. Osmar respondendo)`);
-      const conversa = await getOrCreateConversa(phone);
-      await saveMessage(conversa.id, 'user', text);
+      console.log(`[PAUSE] Mensagem de ${phone} salva - IA pausada (Dr. Osmar respondendo)`);
+      // Salvar mensagem mesmo durante pausa (mantém histórico completo)
+      try {
+        const conversa = await getOrCreateConversa(phone);
+        await saveMessage(conversa.id, 'user', text);
+      } catch (e) {
+        console.error('[PAUSE] Erro ao salvar msg pausada:', e.message);
+      }
       return res.json({ status: 'paused' });
     }
 
@@ -528,8 +731,8 @@ async function processBufferedMessage(phone, text, senderName) {
     // Adicionar ao buffer e esperar 8 segundos por mais mensagens
     const result = await bufferMessage(phone, text, senderName);
 
-    // Se não é hora de processar (tem mais mensagens chegando), parar aqui
-    if (!result.shouldProcess) return;
+    // null = mensagem acumulada no buffer de outra chamada, não processar
+    if (!result) return;
 
     // Agora sim, processar todas as mensagens juntas
     const combinedText = result.combined;
@@ -550,6 +753,11 @@ async function processBufferedMessage(phone, text, senderName) {
     // Salvar todas as mensagens do buffer como uma entrada
     await saveMessage(conversa.id, 'user', combinedText);
 
+    // Extrair dados do lead (nome, email, tese) automaticamente
+    if (lead) {
+      await extractAndUpdateLead(lead.id, combinedText);
+    }
+
     // Detectar se lead está quente
     if (lead && isHotLead(combinedText)) {
       console.log(`[HOT] Lead quente detectado: ${finalName} - "${combinedText.slice(0, 60)}"`);
@@ -559,7 +767,7 @@ async function processBufferedMessage(phone, text, senderName) {
     }
 
     const history = await getHistory(conversa.id);
-    const rawReply = await generateResponse(history, combinedText);
+    const rawReply = await generateResponse(history, combinedText, conversa.id);
     const reply = trimResponse(rawReply);
     await saveMessage(conversa.id, 'assistant', reply);
     await sendWhatsApp(phone, reply);
@@ -641,35 +849,50 @@ app.get('/api/test/claude', async (req, res) => {
 
 // Listar conversas recentes
 app.get('/api/conversas', async (req, res) => {
-  const { data } = await supabase
-    .from('conversas')
-    .select('*, leads(nome, tese_interesse, etapa_funil)')
-    .order('criado_em', { ascending: false })
-    .limit(50);
-  res.json(data || []);
+  try {
+    const { data } = await supabase
+      .from('conversas')
+      .select('*, leads(nome, tese_interesse, etapa_funil)')
+      .order('criado_em', { ascending: false })
+      .limit(50);
+    res.json(data || []);
+  } catch (e) {
+    console.error('[API] Erro /api/conversas:', e.message);
+    res.status(500).json({ error: 'Erro ao buscar conversas' });
+  }
 });
 
 // Buscar mensagens de uma conversa
 app.get('/api/conversas/:id/mensagens', async (req, res) => {
-  const { data } = await supabase
-    .from('mensagens')
-    .select('*')
-    .eq('conversa_id', req.params.id)
-    .order('criado_em', { ascending: true });
-  res.json(data || []);
+  try {
+    const { data } = await supabase
+      .from('mensagens')
+      .select('*')
+      .eq('conversa_id', req.params.id)
+      .order('criado_em', { ascending: true });
+    res.json(data || []);
+  } catch (e) {
+    console.error('[API] Erro /api/mensagens:', e.message);
+    res.status(500).json({ error: 'Erro ao buscar mensagens' });
+  }
 });
 
 // Enviar mensagem manual pelo CRM
 app.post('/api/enviar', async (req, res) => {
-  const { phone, message, conversaId } = req.body;
-  if (!phone || !message) return res.status(400).json({ error: 'phone e message obrigatórios' });
+  try {
+    const { phone, message, conversaId } = req.body;
+    if (!phone || !message) return res.status(400).json({ error: 'phone e message obrigatórios' });
 
-  if (conversaId) {
-    await saveMessage(conversaId, 'assistant', message);
+    if (conversaId) {
+      await saveMessage(conversaId, 'assistant', message);
+    }
+
+    const result = await sendWhatsApp(phone, message);
+    res.json({ ok: true, result });
+  } catch (e) {
+    console.error('[API] Erro /api/enviar:', e.message);
+    res.status(500).json({ error: 'Erro ao enviar mensagem' });
   }
-
-  const result = await sendWhatsApp(phone, message);
-  res.json({ ok: true, result });
 });
 
 // Métricas de conversão

@@ -16,12 +16,8 @@ const conversaEtapas = new Map();
 // Definição de cada etapa do fluxo
 const FLUXO = {
   [ETAPAS.SAUDACAO]: {
-    instrucao: `ETAPA ATUAL: SAUDAÇÃO
-Seu objetivo agora: entender por que a pessoa está entrando em contato.
-- Cumprimente de forma calorosa e curta
-- Pergunte como pode ajudar (se a pessoa não disse ainda)
-- Se a pessoa já disse o problema, pule direto para qualificação
-- NÃO peça nome/email ainda, é cedo demais`,
+    instrucao: `ETAPA: SAUDAÇÃO
+Cumprimente e descubra o assunto. Se a pessoa JÁ disse o assunto, mostre que entendeu e pergunte um detalhe. Não enrole.`,
 
     avanca: (text, lead) => {
       // Avança quando identificamos o assunto/problema
@@ -36,13 +32,10 @@ Seu objetivo agora: entender por que a pessoa está entrando em contato.
   },
 
   [ETAPAS.QUALIFICACAO]: {
-    instrucao: `ETAPA ATUAL: QUALIFICAÇÃO
-Seu objetivo agora: entender os detalhes do problema da pessoa.
-- Faça UMA pergunta por vez sobre a situação específica
-- Use as palavras que a pessoa usou (se falou "escola", fale "escola")
-- Entenda: quem é afetado, há quanto tempo, qual a situação atual
-- Quando tiver entendido o problema, mostre que tem solução
-- Agora sim peça o NOME se ainda não tem`,
+    instrucao: `ETAPA: QUALIFICAÇÃO
+Você já sabe o assunto. Agora: faça 1 pergunta para entender o caso + peça o NOME se não tem.
+Use as palavras da pessoa. Mostre que tem solução: "Isso o Dr. Osmar resolve, já pegamos casos assim."
+Máximo 2 trocas de mensagem aqui, depois já proponha agendar.`,
 
     avanca: (text, lead) => {
       // Avança quando temos o nome e já falamos sobre o problema
@@ -58,13 +51,11 @@ Seu objetivo agora: entender os detalhes do problema da pessoa.
   },
 
   [ETAPAS.PROPOSTA]: {
-    instrucao: `ETAPA ATUAL: PROPOSTA DE VALOR
-Seu objetivo agora: mostrar que o Dr. Osmar resolve isso e gerar urgência.
-- Diga em 1 frase que tem solução pro caso da pessoa
-- Use gatilho: "Caso parecido deu muito certo" ou "Cada mês sem resolver é dinheiro perdido"
-- Peça o EMAIL se ainda não tem
-- Se já tem nome e email, proponha dia e horário para consulta
-- Exemplo: "Que tal quarta às 14h com o Dr. Osmar? Pode ser online se preferir"`,
+    instrucao: `ETAPA: PROPOSTA — AGENDE AGORA!
+Chame pelo NOME. Diga: "Vou consultar a agenda do Dr. Osmar pra te encaixar..."
+Peça o EMAIL se não tem. Se já tem nome e email, PROPONHA HORÁRIO IMEDIATO.
+Use urgência: "Ainda tem vaga essa semana" / "Cada mês sem resolver é dinheiro perdido".
+NÃO faça mais perguntas sobre o problema. O momento é de AGENDAR.`,
 
     avanca: (text, lead) => {
       // Avança quando mencionam dia/horário ou aceitam agendar

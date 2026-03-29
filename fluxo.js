@@ -78,13 +78,8 @@ Seu objetivo agora: mostrar que o Dr. Osmar resolve isso e gerar urgência.
   },
 
   [ETAPAS.AGENDAMENTO]: {
-    instrucao: `ETAPA ATUAL: AGENDAMENTO
-Seu objetivo agora: confirmar dia, horário e formato da consulta.
-- Confirme o dia e horário escolhido
-- Pergunte se prefere presencial (Belém/PA) ou online
-- Se a pessoa pediu e você ainda não tem email, peça agora
-- Confirme tudo: "Perfeito! Consulta marcada pra [dia] às [hora], [formato]. O Dr. Osmar vai te atender!"
-- Depois da confirmação, diga que vai enviar os detalhes`,
+    instrucao: '', // Preenchido dinamicamente com horários reais via getInstrucaoAgendamento()
+    instrucaoDinamica: true, // Flag para indicar que precisa de dados do calendar
 
     avanca: (text, lead) => {
       // Avança quando a consulta foi confirmada
@@ -141,9 +136,29 @@ function processarEtapa(conversaId, text, lead) {
 }
 
 // Obter a instrução do prompt para a etapa atual
-function getInstrucaoEtapa(conversaId) {
+// Para etapa de agendamento, usa horários reais (async)
+async function getInstrucaoEtapa(conversaId, horariosTexto) {
   const etapa = getEtapa(conversaId);
-  return FLUXO[etapa]?.instrucao || FLUXO[ETAPAS.SAUDACAO].instrucao;
+  const fluxo = FLUXO[etapa];
+
+  if (!fluxo) return FLUXO[ETAPAS.SAUDACAO].instrucao;
+
+  // Etapa de agendamento: injetar horários reais
+  if (fluxo.instrucaoDinamica && horariosTexto) {
+    return `ETAPA ATUAL: AGENDAMENTO
+Seu objetivo agora: confirmar dia, horário e formato da consulta.
+
+HORÁRIOS DISPONÍVEIS DO DR. OSMAR (consulte a agenda real):
+${horariosTexto}
+
+- Ofereça 2 ou 3 desses horários para a pessoa escolher
+- Pergunte se prefere presencial (Belém/PA) ou online
+- Se ainda não tem email, peça agora
+- Quando confirmar: "Perfeito! Consulta marcada pra [dia] às [hora], [formato]. O Dr. Osmar vai te atender!"
+- NUNCA invente horários, use SOMENTE os listados acima`;
+  }
+
+  return fluxo.instrucao || FLUXO[ETAPAS.SAUDACAO].instrucao;
 }
 
 // Limpar cache de conversas antigas (chamado periodicamente)

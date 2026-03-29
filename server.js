@@ -11,6 +11,10 @@ const ia = require('./ia');
 const fluxo = require('./fluxo');
 let calendar;
 try { calendar = require('./calendar'); } catch (e) { console.log('[INIT] Calendar não disponível'); }
+let email;
+try { email = require('./email'); } catch (e) { console.log('[INIT] Email não disponível'); }
+let audio;
+try { audio = require('./audio'); } catch (e) { console.log('[INIT] Audio não disponível'); }
 
 const app = express();
 app.use(cors());
@@ -98,7 +102,7 @@ function checkRateLimit(ip) {
 setInterval(() => { rateLimitMap.clear(); }, 5 * 60 * 1000);
 
 // ===== PROCESSAMENTO ASSÍNCRONO =====
-async function processBufferedMessage(phone, text, senderName) {
+async function processBufferedMessage(phone, text, senderName, respondComAudio = false) {
   try {
     const result = await bufferMessage(phone, text, senderName);
     if (!result) return; // Mensagem acumulada em buffer existente
@@ -177,7 +181,66 @@ async function processBufferedMessage(phone, text, senderName) {
     const rawReply = await ia.generateResponse(history, combinedText, conversa.id, leadAtualizado);
     const reply = ia.trimResponse(rawReply);
     await db.saveMessage(conversa.id, 'assistant', reply);
-    await whatsapp.sendText(phone, reply);
+
+    // Se veio de áudio, responder com áudio + texto
+    if (respondComAudio && audio) {
+      const audioBase64 = await audio.gerarAudio(reply);
+      if (audioBase64) {
+        await whatsapp.sendAudio(phone, audioBase64);
+        console.log(`[AUDIO] Resposta em áudio enviada para ${phone}`);
+      } else {
+        // Fallback: se falhar gerar áudio, envia texto
+        await whatsapp.sendText(phone, reply);
+      }
+    } else {
+      await whatsapp.sendText(phone, reply);
+    }
+
+    // Detectar se a Ana confirmou agendamento na resposta
+    // Se sim, criar evento no Google Calendar automaticamente
+    if (calendar && leadAtualizado) {
+      const replyLower = reply.toLowerCase();
+      const confirmouAgendamento = replyLower.includes('agendei') || replyLower.includes('agendada') ||
+        replyLower.includes('consulta marcada') || replyLower.includes('marcada para') ||
+        replyLower.includes('está agendad') || replyLower.includes('confirmad');
+
+      if (confirmouAgendamento) {
+        try {
+          // Tentar encontrar o slot mencionado na conversa
+          const textoCompleto = combinedText + ' ' + reply;
+          const slot = await calendar.encontrarSlot(textoCompleto);
+          if (slot) {
+            const evento = await calendar.criarConsulta(
+              leadAtualizado.nome || finalName || 'Lead',
+              phone,
+              leadAtualizado.email || '',
+              slot.inicio,
+              textoCompleto.toLowerCase().includes('presencial') ? 'presencial' : 'online'
+            );
+            if (evento) {
+              await db.trackEvent(conversa.id, lead?.id, 'consulta_agendada', evento.inicio);
+              await db.updateLead(lead.id, { etapa_funil: 'convertido' });
+              console.log(`[CALENDAR] Consulta agendada automaticamente: ${evento.inicio}`);
+
+              // Enviar email de confirmação
+              if (email && leadAtualizado.email) {
+                const partes = evento.inicio.match(/(\w+)\s*\(([^)]+)\)\s*às\s*(\d+)h/);
+                await email.enviarConfirmacao({
+                  nome: leadAtualizado.nome || finalName || 'Cliente',
+                  email: leadAtualizado.email,
+                  data: partes ? partes[2] : evento.inicio,
+                  horario: partes ? `${partes[3]}h` : '',
+                  formato: evento.formato || 'online',
+                  assunto: leadAtualizado.tese_interesse || ''
+                });
+              }
+            }
+          }
+        } catch (e) {
+          console.error('[CALENDAR] Erro ao agendar automático:', e.message);
+        }
+      }
+    }
 
     // Atualizar etapa do funil
     if (lead && lead.etapa_funil === 'novo') {
@@ -324,6 +387,45 @@ app.post('/webhook/zapi', async (req, res) => {
     const phone = body.phone || body.from?.replace('@c.us', '') || '';
     const text = body.text?.message || body.body || '';
     const senderName = body.senderName || body.notifyName || '';
+    const isAudio = body.isAudio || body.audio || body.audioMessage || (body.type === 'ReceivedCallback' && body.audio);
+    const audioUrl = body.audio?.audioUrl || body.audioMessage?.url || body.audio?.url || body.mediaUrl || null;
+
+    // Se for áudio, transcrever antes de processar
+    if (isAudio || audioUrl) {
+      if (!audio) return res.json({ status: 'audio_not_configured' });
+
+      console.log(`[AUDIO] Áudio recebido de ${phone}`);
+      res.json({ status: 'audio_received' });
+
+      // Processar áudio assincronamente
+      (async () => {
+        try {
+          if (isAIPaused(phone)) {
+            console.log(`[PAUSE] Áudio de ${phone} ignorado - IA pausada`);
+            return;
+          }
+
+          const url = audioUrl;
+          if (!url) {
+            console.error('[AUDIO] URL do áudio não encontrada no payload');
+            return;
+          }
+
+          const transcricao = await audio.transcreverAudio(url);
+          if (!transcricao) {
+            console.error('[AUDIO] Falha na transcrição');
+            await whatsapp.sendText(phone, 'Desculpe, não consegui ouvir seu áudio. Pode digitar ou enviar novamente?');
+            return;
+          }
+
+          // Processar como mensagem de texto normal, mas marcar que veio de áudio
+          await processBufferedMessage(phone, transcricao, senderName, true);
+        } catch (e) {
+          console.error('[AUDIO] Erro ao processar áudio:', e.message);
+        }
+      })();
+      return;
+    }
 
     if (!phone || !text) return res.json({ status: 'no_content' });
 
@@ -470,6 +572,7 @@ app.listen(config.PORT, () => {
   console.log(`Claude: ${config.ANTHROPIC_API_KEY ? 'OK' : 'Faltando'}`);
   console.log(`Z-API: ${config.ZAPI_INSTANCE ? 'OK' : 'Faltando'}`);
   console.log(`Supabase: ${config.SUPABASE_URL ? 'OK' : 'Faltando'}`);
+  console.log(`OpenAI: ${config.OPENAI_API_KEY ? 'OK (áudio ativo)' : 'Faltando (áudio desativado)'}`);
   console.log(`Webhook: POST ${config.RENDER_URL || 'http://localhost:' + config.PORT}/webhook/zapi`);
   console.log('');
 });

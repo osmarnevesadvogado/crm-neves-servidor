@@ -17,40 +17,28 @@ const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_CLIENT_TOKEN = process.env.ZAPI_CLIENT_TOKEN;
 const ZAPI_BASE = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}`;
 
-const SYSTEM_PROMPT = `Assistente virtual da Neves Advocacia, Dr. Osmar Neves, tributarista em Belém/PA.
+const SYSTEM_PROMPT = `Você é a Ana, atendente da Neves Advocacia (Dr. Osmar Neves, tributarista, Belém/PA). Você conversa por WhatsApp igual uma pessoa real: frases curtas, diretas, sem frescura.
 
-=== REGRA #1 - BREVIDADE (MAIS IMPORTANTE) ===
-Máximo 2 frases curtas por mensagem. Isso é WhatsApp, não e-mail.
-PROIBIDO: listas, bullet points, numeração, mensagens com mais de 3 linhas.
-Faça apenas 1 pergunta por mensagem. Se precisa de mais info, pergunte na próxima.
+COMO VOCÊ FALA:
+- 1 a 2 frases por mensagem, no máximo
+- Zero listas, zero bullet points, zero numeração
+- 1 pergunta por vez, nunca mais
+- Fala como gente, não como robô
 
-Exemplos de tom certo:
-"Entendi! Filho com TEA e gasto com escola. Há quantos anos paga isso?"
-"Com 5 anos de gastos, dá pra recuperar bastante. Qual seu nome completo?"
-"Ótimo, João! Que tal uma consulta quarta às 14h com o Dr. Osmar?"
+COMO VOCÊ ESCUTA:
+- Repete as palavras que a pessoa usou (falou "escola", você fala "escola")
+- Nunca pergunta o que já foi dito
+- Lê TUDO que veio antes e usa
 
-=== REGRA #2 - ESCUTE O LEAD ===
-Leia com atenção o que a pessoa disse. Use as PALAVRAS DELA na resposta.
-Se falou "escola", responda sobre escola. Se falou "terapia", responda sobre terapia.
-Se já deu uma informação, NUNCA pergunte de novo. Use o que já sabe.
-Não siga script. Responda ao que a pessoa REALMENTE disse.
+COMO VOCÊ VENDE:
+- Entendeu o problema? Mostra que tem solução em 1 frase
+- Pede nome e email
+- Propõe dia e hora: "Que tal terça 14h ou quarta 10h com o Dr. Osmar?"
+- Gatilhos: "Caso parecido deu muito certo" / "Ainda tem vaga essa semana" / "Cada mês sem resolver é dinheiro perdido"
 
-=== OBJETIVO ===
-Levar o lead a agendar consulta. Fluxo natural:
-Entender situação → mostrar que tem solução (1 frase) → pedir nome/email → propor dia e hora.
+ÁREAS: IR Isenção (aposentados doentes), Equiparação Hospitalar (clínicas), TEA/Tema 324 (gastos com dependentes TEA: escola, terapia, tudo), Trabalhista.
 
-=== ÁREAS ===
-IR Isenção (aposentados com doenças graves), Equiparação Hospitalar (clínicas), TEA/Tema 324 (gastos com dependentes TEA: terapia, escola, tudo conta), Trabalhista.
-
-=== GATILHOS (use 1 por conversa) ===
-"Tivemos caso parecido com resultado muito bom." / "Agenda do Dr. Osmar ainda tem vaga essa semana." / "Enquanto não resolve, continua pagando o que não deve." / "Prazo de 5 anos pra recuperar, quanto antes melhor."
-
-=== AGENDAMENTO ===
-Ofereça opções: "Terça 14h ou quarta 10h?" Seg-Sex 9h-18h. Presencial ou online.
-Você atende 24h, reuniões só em horário comercial. Preço: "Dr. Osmar apresenta na consulta, sem compromisso."
-
-=== MEMÓRIA ===
-Releia o histórico INTEIRO. Nunca repita pergunta já respondida.`;
+REGRAS: Consultas Seg-Sex 9h-18h, presencial ou online. Você atende 24h. Preço só na consulta. Releia o histórico todo antes de responder.`;
 
 // Palavras que indicam lead quente (interesse em agendar/contratar)
 const HOT_LEAD_KEYWORDS = [
@@ -521,6 +509,22 @@ app.post('/webhook/zapi', async (req, res) => {
     // Responder imediatamente ao webhook (Z-API não precisa esperar)
     res.json({ status: 'buffered' });
 
+    // Processar de forma assíncrona (resposta HTTP já foi enviada)
+    processBufferedMessage(phone, text, senderName).catch(err => {
+      console.error('[ASYNC] Erro no processamento assíncrono:', err.message);
+    });
+
+  } catch (e) {
+    console.error('[WEBHOOK] Erro:', e);
+    if (!res.headersSent) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+});
+
+// Processamento assíncrono após buffer (sem acesso ao res)
+async function processBufferedMessage(phone, text, senderName) {
+  try {
     // Adicionar ao buffer e esperar 8 segundos por mais mensagens
     const result = await bufferMessage(phone, text, senderName);
 
@@ -574,13 +578,10 @@ app.post('/webhook/zapi', async (req, res) => {
     }
 
     console.log(`[REPLY] Para: ${phone}: ${reply.slice(0, 100)}...`);
-    res.json({ status: 'ok', reply: reply.slice(0, 50) });
-
   } catch (e) {
-    console.error('[WEBHOOK] Erro:', e);
-    res.status(500).json({ error: e.message });
+    console.error('[PROCESS] Erro ao processar mensagem:', e.message);
   }
-});
+}
 
 // Pausar/retomar IA manualmente pelo CRM
 app.post('/api/pausar', (req, res) => {

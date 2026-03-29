@@ -65,12 +65,12 @@ function trimResponse(text) {
 
 // Construir histórico inteligente (com resumo para conversas longas)
 async function buildSmartHistory(history, conversaId) {
-  if (history.length <= 20) {
+  if (history.length <= 40) {
     return history.map(m => ({ role: m.role, content: m.content }));
   }
 
-  const recentMsgs = history.slice(-12);
-  const oldMsgs = history.slice(0, -12);
+  const recentMsgs = history.slice(-30);
+  const oldMsgs = history.slice(0, -30);
 
   const cached = summaryCache.get(conversaId);
   let summary;
@@ -82,9 +82,9 @@ async function buildSmartHistory(history, conversaId) {
     try {
       const res = await anthropic.messages.create({
         model: config.CLAUDE_MODEL,
-        max_tokens: 200,
-        system: 'Você extrai dados-chave de conversas. Responda APENAS com os dados encontrados, sem explicação.',
-        messages: [{ role: 'user', content: `Extraia desta conversa: nome do lead, problema/tese jurídica, email, telefone, dia/horário mencionado, qualquer informação pessoal relevante. Se não encontrou, omita.\n\n${oldText}` }]
+        max_tokens: 500,
+        system: 'Você extrai dados-chave de conversas. Responda APENAS com os dados encontrados, sem explicação. Seja detalhado.',
+        messages: [{ role: 'user', content: `Extraia desta conversa TUDO que for relevante: nome do lead, problema/tese jurídica, email, telefone, dia/horário mencionado, preferências (presencial/online), detalhes pessoais (doença, situação do dependente, tipo de empresa), e qualquer informação que não pode ser esquecida. Se não encontrou, omita.\n\n${oldText}` }]
       });
       summary = res.content[0].text;
     } catch (e) {

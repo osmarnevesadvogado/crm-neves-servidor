@@ -9,6 +9,9 @@ module.exports = {
   CLAUDE_MODEL: 'claude-haiku-4-5-20251001',
   MAX_TOKENS: 200,
 
+  // OpenAI (Whisper + TTS)
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+
   // Supabase
   SUPABASE_URL: process.env.SUPABASE_URL,
   SUPABASE_KEY: process.env.SUPABASE_KEY,

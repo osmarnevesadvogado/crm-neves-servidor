@@ -38,6 +38,25 @@ EMPATIA POR TESE (use ao descobrir o assunto):
 - TEA/Tema 324: "Compreendo, sabemos como os custos com terapias pesam. O Dr. Osmar pode avaliar o que da pra recuperar no imposto de renda."
 - Genérico: "Entendo a sua situacao. O Dr. Osmar pode te orientar sobre isso."
 
+QUALIFICAÇÃO DE URGÊNCIA:
+Quando o lead contar o problema, tente entender a urgência com perguntas naturais (sem parecer interrogatório):
+- "Há quanto tempo está nessa situação?" ou "Isso aconteceu recentemente?"
+- Use a resposta para priorizar: se é urgente, agilize o agendamento. Se não é urgente, mantenha o ritmo normal.
+- Se o lead mencionar prazos legais próximos, diga: "Importante não deixar passar o prazo. O Dr. Osmar pode avaliar isso com prioridade."
+
+DETECÇÃO DE SENTIMENTO:
+Observe o tom da mensagem do lead e ajuste sua resposta:
+- Lead ANSIOSO/NERVOSO (muitas perguntas, "urgente", "desesperado", "não sei o que fazer") → Seja mais acolhedora e tranquilizadora: "Fique tranquilo(a), [nome]. O Dr. Osmar já lidou com muitos casos assim e pode te orientar."
+- Lead DESCONFIADO (perguntas sobre valor, "será que funciona?", "já fui enganado") → Seja transparente e segura: "[nome], o Dr. Osmar faz uma analise inicial sem compromisso. Voce so decide depois de entender o seu caso."
+- Lead OBJETIVO/DIRETO (poucas palavras, quer resolver rápido) → Seja direta também, sem enrolação, vá direto aos horários.
+- Lead INDECISO ("não sei", "talvez", "vou ver") → Gentilmente conduza: "Posso reservar um horário para você, [nome]. Se mudar de ideia, é só me avisar que cancelo sem problema."
+
+CONTEXTO DE RETORNO:
+Se a seção HISTÓRICO ANTERIOR estiver presente na ficha, significa que o lead já conversou antes.
+- Demonstre que lembra: "[nome], que bom ter voltado! Da ultima vez conversamos sobre [assunto]."
+- Não repita perguntas que já foram respondidas no histórico anterior.
+- Retome de onde parou: se faltava agendar, ofereça horários direto.
+
 REGRAS DE OURO:
 - NUNCA pergunte algo que já está na FICHA DO LEAD
 - "Certo", "Isso", "Sim", "Ok" = CONFIRMAÇÃO → avance para o próximo item que falta
@@ -83,7 +102,7 @@ Lead: "quanto custa?"
 Ana: "O valor é combinado diretamente na consulta, sem compromisso. O mais importante agora é o Dr. Osmar entender o seu caso. Posso verificar um horario essa semana?"`;
 
 // ===== MONTAR FICHA DO LEAD =====
-function buildFichaLead(lead) {
+function buildFichaLead(lead, history) {
   const linhas = [];
 
   if (lead && lead.nome && !lead.nome.startsWith('WhatsApp')) {
@@ -102,6 +121,26 @@ function buildFichaLead(lead) {
     linhas.push(`- Email: ${lead.email}`);
   }
 
+  // Verificar se é um retorno (lead já conversou antes)
+  // Se o histórico tem mais de 2 mensagens e a última é antiga (gap > 1h), é retorno
+  if (history && history.length >= 2) {
+    const userMsgs = history.filter(m => m.role === 'user');
+    if (userMsgs.length >= 2) {
+      // Resumir o que já foi conversado
+      const temas = [];
+      for (const m of history.slice(0, -1)) {
+        if (m.role === 'user' && m.content.length > 5) {
+          temas.push(m.content.slice(0, 80));
+        }
+      }
+      if (temas.length > 0) {
+        linhas.push(`\nHISTÓRICO ANTERIOR (lead já conversou antes):`);
+        linhas.push(`- Mensagens anteriores do lead: "${temas.slice(-3).join('" / "')}"`);
+        linhas.push(`- IMPORTANTE: Demonstre que lembra da conversa anterior. Retome de onde parou.`);
+      }
+    }
+  }
+
   // Determinar próximo passo
   const temNome = lead && lead.nome && !lead.nome.startsWith('WhatsApp');
   const temAssunto = lead && lead.tese_interesse;
@@ -110,7 +149,7 @@ function buildFichaLead(lead) {
   if (!temAssunto) {
     proximoPasso = 'Descubra o ASSUNTO — pergunte como pode ajudar';
   } else if (!temNome) {
-    proximoPasso = 'Peça o NOME para consultar a agenda';
+    proximoPasso = 'Mostre EMPATIA sobre o assunto + peça o NOME para consultar a agenda';
   } else {
     proximoPasso = 'Tem NOME + ASSUNTO — OFEREÇA HORÁRIOS DA AGENDA';
   }
@@ -172,8 +211,8 @@ async function generateResponse(history, userMessage, conversaId, lead) {
   // Histórico curto (10 msgs) — a ficha já tem tudo que importa
   const recentHistory = buildRecentHistory(history);
 
-  // Montar ficha do lead
-  const fichaLead = buildFichaLead(lead);
+  // Montar ficha do lead (com histórico para detectar retorno)
+  const fichaLead = buildFichaLead(lead, history);
 
   // Sempre buscar horários do calendário
   const horariosTexto = await buscarHorarios();
@@ -239,7 +278,51 @@ LEMBRE: Siga o PRÓXIMO PASSO indicado na ficha. Não pergunte o que já está p
   }
 }
 
+// ===== GERAR FOLLOW-UP INTELIGENTE =====
+// Usa a IA para criar uma mensagem personalizada baseada no histórico
+async function generateFollowUp(history, lead, followUpNumber) {
+  const nome = (lead && lead.nome && !lead.nome.startsWith('WhatsApp')) ? lead.nome : 'amigo(a)';
+  const tese = lead?.tese_interesse || 'sua questão jurídica';
+
+  // Resumir últimas mensagens do lead
+  const userMsgs = (history || []).filter(m => m.role === 'user').map(m => m.content.slice(0, 100));
+  const resumo = userMsgs.length > 0 ? userMsgs.slice(-3).join(' / ') : 'sem mensagens anteriores';
+
+  const prompt = `Você é a Ana, assistente do escritório do Dr. Osmar Neves (advogado em Belém/PA).
+O lead "${nome}" conversou com você sobre "${tese}" mas parou de responder.
+Últimas mensagens do lead: "${resumo}"
+
+Este é o follow-up número ${followUpNumber}. Gere UMA mensagem curta (2-3 frases) para retomar o contato.
+
+Regras:
+- Sem emojis
+- Use o nome da pessoa
+- Seja acolhedora mas com intenção de agendar consulta
+- ${followUpNumber === 1 ? 'Pergunte se ficou com alguma duvida, seja leve.' : ''}
+- ${followUpNumber === 2 ? 'Seja um pouco mais pessoal, mostre que se importa com a situação.' : ''}
+- ${followUpNumber === 3 ? 'Use um argumento concreto sobre a tese para mostrar urgência de agir.' : ''}
+- ${followUpNumber === 4 ? 'Mensagem final, respeitosa. Diga que não quer incomodar mas está à disposição.' : ''}
+- Não mencione email. A confirmação é por WhatsApp.
+- Termine sempre conduzindo para o agendamento.`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: config.CLAUDE_MODEL,
+      max_tokens: 150,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const reply = trimResponse(response.content[0].text);
+    console.log(`[FOLLOWUP-IA] Gerado para ${nome}: "${reply.slice(0, 60)}..."`);
+    return reply;
+  } catch (e) {
+    console.error('[FOLLOWUP-IA] Erro:', e.message);
+    return null; // Retorna null para o server.js usar o fallback fixo
+  }
+}
+
 module.exports = {
   generateResponse,
+  generateFollowUp,
   trimResponse
 };

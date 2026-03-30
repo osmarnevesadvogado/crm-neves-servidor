@@ -254,7 +254,7 @@ async function findClienteByPhone(phone) {
   const tel = cleanPhone(phone);
   const { data } = await supabase
     .from('clientes')
-    .select('id')
+    .select('*')
     .eq('telefone', tel)
     .limit(1)
     .single();
@@ -264,12 +264,132 @@ async function findClienteByPhone(phone) {
 async function findCasoByCliente(clienteId) {
   const { data } = await supabase
     .from('casos')
-    .select('id')
+    .select('*')
     .eq('cliente_id', clienteId)
     .order('criado_em', { ascending: false })
     .limit(1)
     .single();
   return data;
+}
+
+// ===== CONTEXTO COMPLETO DO TELEFONE (para a Ana) =====
+
+async function getContextoCompleto(phone) {
+  const { cleanPhone } = require('./whatsapp');
+  const tel = cleanPhone(phone);
+
+  // 1. Verificar se já é cliente
+  const { data: cliente } = await supabase
+    .from('clientes')
+    .select('*')
+    .eq('telefone', tel)
+    .limit(1)
+    .single();
+
+  if (!cliente) return { tipo: 'lead', cliente: null, casos: [], tarefas: [], financeiro: [] };
+
+  // 2. Buscar casos do cliente
+  const { data: casos } = await supabase
+    .from('casos')
+    .select('*')
+    .eq('cliente_id', cliente.id)
+    .order('criado_em', { ascending: false });
+
+  // 3. Buscar tarefas pendentes dos casos
+  const casoIds = (casos || []).map(c => c.id);
+  let tarefas = [];
+  if (casoIds.length > 0) {
+    const { data: t } = await supabase
+      .from('tarefas')
+      .select('*')
+      .in('caso_id', casoIds)
+      .eq('status', 'pendente')
+      .order('data_limite', { ascending: true })
+      .limit(5);
+    tarefas = t || [];
+  }
+
+  // 4. Buscar financeiro pendente
+  const { data: financeiro } = await supabase
+    .from('financeiro')
+    .select('*')
+    .eq('cliente_id', cliente.id)
+    .in('status', ['pendente', 'atrasado'])
+    .order('data_vencimento', { ascending: true })
+    .limit(5);
+
+  return {
+    tipo: 'cliente',
+    cliente,
+    casos: casos || [],
+    tarefas,
+    financeiro: financeiro || []
+  };
+}
+
+// ===== RELATÓRIO SEMANAL =====
+
+async function getRelatorioSemanal() {
+  const agora = new Date();
+  const semanaAtras = new Date(agora.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const semanaAtrasISO = semanaAtras.toISOString();
+
+  // Leads novos na semana
+  const { data: leadsNovos } = await supabase
+    .from('leads')
+    .select('id, nome, tese_interesse, etapa_funil')
+    .gte('criado_em', semanaAtrasISO);
+
+  // Leads convertidos na semana
+  const convertidos = (leadsNovos || []).filter(l => l.etapa_funil === 'convertido');
+
+  // Cobranças atrasadas
+  const { data: cobrancas } = await supabase
+    .from('financeiro')
+    .select('id, valor, data_vencimento, cliente_id')
+    .eq('status', 'atrasado');
+
+  const totalAtrasado = (cobrancas || []).reduce((s, f) => s + (f.valor || 0), 0);
+
+  // Tarefas vencidas
+  const { data: tarefasVencidas } = await supabase
+    .from('tarefas')
+    .select('id, descricao, data_limite')
+    .eq('status', 'pendente')
+    .lt('data_limite', agora.toISOString().slice(0, 10));
+
+  // Agendamentos (tarefas criadas com "Consulta" na semana)
+  const { data: agendamentos } = await supabase
+    .from('tarefas')
+    .select('id, descricao')
+    .gte('criado_em', semanaAtrasISO)
+    .ilike('descricao', '%consulta%');
+
+  // Total leads ativos no funil
+  const { data: leadsAtivos } = await supabase
+    .from('leads')
+    .select('id')
+    .not('etapa_funil', 'in', '("convertido","perdido")');
+
+  // Financeiro recebido na semana
+  const { data: recebidos } = await supabase
+    .from('financeiro')
+    .select('id, valor')
+    .eq('status', 'pago')
+    .gte('data_pagamento', semanaAtrasISO.slice(0, 10));
+
+  const totalRecebido = (recebidos || []).reduce((s, f) => s + (f.valor || 0), 0);
+
+  return {
+    leadsNovos: (leadsNovos || []).length,
+    convertidos: convertidos.length,
+    agendamentos: (agendamentos || []).length,
+    cobrancasAtrasadas: (cobrancas || []).length,
+    totalAtrasado,
+    tarefasVencidas: (tarefasVencidas || []).length,
+    leadsAtivos: (leadsAtivos || []).length,
+    totalRecebido
+  };
 }
 
 module.exports = {
@@ -290,5 +410,7 @@ module.exports = {
   getMetricas,
   createTarefa,
   findClienteByPhone,
-  findCasoByCliente
+  findCasoByCliente,
+  getContextoCompleto,
+  getRelatorioSemanal
 };

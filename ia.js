@@ -102,31 +102,71 @@ Lead: "quanto custa?"
 Ana: "O valor é combinado diretamente na consulta, sem compromisso. O mais importante agora é o Dr. Osmar entender o seu caso. Posso verificar um horario essa semana?"`;
 
 // ===== MONTAR FICHA DO LEAD =====
-function buildFichaLead(lead, history) {
+function buildFichaLead(lead, history, contexto) {
   const linhas = [];
 
-  if (lead && lead.nome && !lead.nome.startsWith('WhatsApp')) {
-    linhas.push(`- Nome: ${lead.nome}`);
-  } else {
-    linhas.push(`- Nome: (não informado ainda)`);
-  }
+  // === CONTEXTO CRM (se existir) ===
+  if (contexto && contexto.tipo === 'cliente') {
+    const cl = contexto.cliente;
+    const nome = cl.nome_completo || cl.razao_social || '';
+    linhas.push(`ATENÇÃO: Esta pessoa JÁ É CLIENTE do escritório!`);
+    linhas.push(`- Nome no sistema: ${nome}`);
+    linhas.push(`- Tipo: ${cl.tipo || 'PF'} · Status: ${cl.status}`);
 
-  if (lead && lead.tese_interesse) {
-    linhas.push(`- Assunto: ${lead.tese_interesse}`);
-  } else {
-    linhas.push(`- Assunto: (não informado ainda)`);
-  }
+    if (contexto.casos.length > 0) {
+      linhas.push(`\nCASOS ATIVOS:`);
+      contexto.casos.forEach(c => {
+        linhas.push(`- ${c.tese} (${c.fase}) ${c.numero_processo ? '· Proc. ' + c.numero_processo : ''}`);
+      });
+    }
 
-  if (lead && lead.email) {
-    linhas.push(`- Email: ${lead.email}`);
+    if (contexto.tarefas.length > 0) {
+      linhas.push(`\nTAREFAS PENDENTES DO CLIENTE:`);
+      contexto.tarefas.slice(0, 3).forEach(t => {
+        linhas.push(`- ${t.descricao} · Prazo: ${t.data_limite || 'sem prazo'}`);
+      });
+    }
+
+    if (contexto.financeiro.length > 0) {
+      const totalPendente = contexto.financeiro.reduce((s, f) => s + (f.valor || 0), 0);
+      const atrasados = contexto.financeiro.filter(f => f.status === 'atrasado');
+      linhas.push(`\nFINANCEIRO:`);
+      linhas.push(`- Total pendente: R$ ${totalPendente.toFixed(2)}`);
+      if (atrasados.length > 0) {
+        linhas.push(`- ATRASADO: ${atrasados.length} parcela(s) totalizando R$ ${atrasados.reduce((s, f) => s + (f.valor || 0), 0).toFixed(2)}`);
+      }
+    }
+
+    linhas.push(`\nCOMPORTAMENTO COM CLIENTE:`);
+    linhas.push(`- Trate pelo nome que já consta no sistema`);
+    linhas.push(`- Não peça dados que já existem (nome, telefone, assunto)`);
+    linhas.push(`- Se perguntar sobre seu caso, informe o status geral`);
+    linhas.push(`- Se tiver cobrança atrasada, NÃO mencione diretamente. Apenas se o CLIENTE perguntar sobre financeiro, diga gentilmente que existem pendencias e que a equipe pode ajudar`);
+    linhas.push(`- Se quiser agendar nova consulta, prossiga normalmente com a agenda`);
+    linhas.push(`- Se tiver dúvida sobre o processo, diga que o Dr. Osmar pode atualizar na próxima consulta`);
+  } else {
+    // Lead normal (não é cliente)
+    if (lead && lead.nome && !lead.nome.startsWith('WhatsApp')) {
+      linhas.push(`- Nome: ${lead.nome}`);
+    } else {
+      linhas.push(`- Nome: (não informado ainda)`);
+    }
+
+    if (lead && lead.tese_interesse) {
+      linhas.push(`- Assunto: ${lead.tese_interesse}`);
+    } else {
+      linhas.push(`- Assunto: (não informado ainda)`);
+    }
+
+    if (lead && lead.email) {
+      linhas.push(`- Email: ${lead.email}`);
+    }
   }
 
   // Verificar se é um retorno (lead já conversou antes)
-  // Se o histórico tem mais de 2 mensagens e a última é antiga (gap > 1h), é retorno
   if (history && history.length >= 2) {
     const userMsgs = history.filter(m => m.role === 'user');
     if (userMsgs.length >= 2) {
-      // Resumir o que já foi conversado
       const temas = [];
       for (const m of history.slice(0, -1)) {
         if (m.role === 'user' && m.content.length > 5) {
@@ -142,19 +182,23 @@ function buildFichaLead(lead, history) {
   }
 
   // Determinar próximo passo
-  const temNome = lead && lead.nome && !lead.nome.startsWith('WhatsApp');
-  const temAssunto = lead && lead.tese_interesse;
-
-  let proximoPasso;
-  if (!temAssunto) {
-    proximoPasso = 'Descubra o ASSUNTO — pergunte como pode ajudar';
-  } else if (!temNome) {
-    proximoPasso = 'Mostre EMPATIA sobre o assunto + peça o NOME para consultar a agenda';
+  if (contexto && contexto.tipo === 'cliente') {
+    linhas.push(`\nPRÓXIMO PASSO: É CLIENTE. Atenda conforme o pedido. Se quiser agendar, ofereça horários. Se perguntar sobre o caso, dê o status geral.`);
   } else {
-    proximoPasso = 'Tem NOME + ASSUNTO — OFEREÇA HORÁRIOS DA AGENDA';
-  }
+    const temNome = lead && lead.nome && !lead.nome.startsWith('WhatsApp');
+    const temAssunto = lead && lead.tese_interesse;
 
-  linhas.push(`\nPRÓXIMO PASSO: ${proximoPasso}`);
+    let proximoPasso;
+    if (!temAssunto) {
+      proximoPasso = 'Descubra o ASSUNTO — pergunte como pode ajudar';
+    } else if (!temNome) {
+      proximoPasso = 'Mostre EMPATIA sobre o assunto + peça o NOME para consultar a agenda';
+    } else {
+      proximoPasso = 'Tem NOME + ASSUNTO — OFEREÇA HORÁRIOS DA AGENDA';
+    }
+
+    linhas.push(`\nPRÓXIMO PASSO: ${proximoPasso}`);
+  }
 
   return linhas.join('\n');
 }
@@ -207,12 +251,12 @@ function buildRecentHistory(history) {
 }
 
 // ===== GERAR RESPOSTA =====
-async function generateResponse(history, userMessage, conversaId, lead) {
+async function generateResponse(history, userMessage, conversaId, lead, contexto) {
   // Histórico curto (10 msgs) — a ficha já tem tudo que importa
   const recentHistory = buildRecentHistory(history);
 
-  // Montar ficha do lead (com histórico para detectar retorno)
-  const fichaLead = buildFichaLead(lead, history);
+  // Montar ficha do lead (com histórico para detectar retorno + contexto CRM)
+  const fichaLead = buildFichaLead(lead, history, contexto);
 
   // Sempre buscar horários do calendário
   const horariosTexto = await buscarHorarios();

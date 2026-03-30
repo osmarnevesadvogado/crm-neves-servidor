@@ -313,73 +313,79 @@ async function checkFollowUps() {
       const nome = conv.leads?.nome || 'amigo(a)';
       const tese = conv.leads?.tese_interesse || 'sua questão jurídica';
 
-      // 1º FOLLOW-UP: 2h sem resposta → texto
+      // Helper: tentar IA primeiro, fallback para msg fixa
+      async function getSmartMsg(fixedMsg, followUpNum) {
+        try {
+          const history = await db.getHistory(conv.id);
+          const smart = await ia.generateFollowUp(history, conv.leads, followUpNum);
+          if (smart && smart.length > 10) return smart;
+        } catch (e) {
+          console.log(`[FOLLOWUP] IA falhou, usando fixo: ${e.message}`);
+        }
+        return fixedMsg;
+      }
+
+      // Helper: enviar como áudio ou texto
+      async function sendFollowUp(msg, asAudio) {
+        if (asAudio && audio) {
+          const audioBase64 = await audio.gerarAudio(msg);
+          if (audioBase64) {
+            await whatsapp.sendAudio(conv.telefone, audioBase64);
+          } else {
+            await whatsapp.sendText(conv.telefone, msg);
+          }
+        } else {
+          await whatsapp.sendText(conv.telefone, msg);
+        }
+        await db.saveMessage(conv.id, 'assistant', msg);
+      }
+
+      // 1º FOLLOW-UP: 2h sem resposta → texto inteligente
       if (followUpCount === 1 && hoursAgo >= 2 && hoursAgo < 4) {
-        const msg = `${nome}, tudo bem? Ficou com alguma duvida? Estou aqui para te ajudar com ${tese}. Pode me perguntar qualquer coisa.`;
+        const fixo = `${nome}, tudo bem? Ficou com alguma duvida? Estou aqui para te ajudar com ${tese}. Pode me perguntar qualquer coisa.`;
+        const msg = await getSmartMsg(fixo, 1);
 
         console.log(`[FOLLOWUP-2h] ${conv.telefone} (${nome}) — texto`);
-        await whatsapp.sendText(conv.telefone, msg);
-        await db.saveMessage(conv.id, 'assistant', msg);
+        await sendFollowUp(msg, false);
         await db.trackEvent(conv.id, conv.leads?.id, 'followup_2h', nome);
       }
 
-      // 2º FOLLOW-UP: 4h sem resposta → áudio
+      // 2º FOLLOW-UP: 4h sem resposta → áudio inteligente
       if (followUpCount === 2 && hoursAgo >= 2 && hoursAgo < 20) {
-        const msg = `${nome}, aqui é a Ana do escritório do Dr. Osmar. Passando para saber se posso te ajudar. O Dr. Osmar tem horarios disponiveis essa semana e a consulta inicial e sem compromisso. Me chama quando puder, estou por aqui.`;
+        const fixo = `${nome}, aqui é a Ana do escritório do Dr. Osmar. Passando para saber se posso te ajudar. O Dr. Osmar tem horarios disponiveis essa semana e a consulta inicial e sem compromisso. Me chama quando puder, estou por aqui.`;
+        const msg = await getSmartMsg(fixo, 2);
 
         console.log(`[FOLLOWUP-4h] ${conv.telefone} (${nome}) — áudio`);
-
-        // Enviar como áudio
-        if (audio) {
-          const audioBase64 = await audio.gerarAudio(msg);
-          if (audioBase64) {
-            await whatsapp.sendAudio(conv.telefone, audioBase64);
-          } else {
-            await whatsapp.sendText(conv.telefone, msg);
-          }
-        } else {
-          await whatsapp.sendText(conv.telefone, msg);
-        }
-        await db.saveMessage(conv.id, 'assistant', msg);
+        await sendFollowUp(msg, true);
         await db.trackEvent(conv.id, conv.leads?.id, 'followup_4h_audio', nome);
       }
 
-      // 3º FOLLOW-UP: 24h → texto com argumento da tese
+      // 3º FOLLOW-UP: 24h → texto inteligente com argumento da tese
       if (followUpCount === 3 && hoursAgo >= 20 && hoursAgo < 48) {
-        let msg = '';
-
+        let fixo = '';
         if (tese === 'IR Isenção')
-          msg = `${nome}, enquanto nao entra com o pedido, o imposto continua sendo descontado do seu salario. O Dr. Osmar pode analisar sem compromisso, e so me chamar.`;
+          fixo = `${nome}, enquanto nao entra com o pedido, o imposto continua sendo descontado do seu salario. O Dr. Osmar pode analisar sem compromisso, e so me chamar.`;
         else if (tese === 'Equiparação Hospitalar')
-          msg = `${nome}, sua clinica pode estar pagando ate 4 vezes mais imposto do que deveria. O Dr. Osmar avalia sem compromisso, me avisa se tiver interesse.`;
+          fixo = `${nome}, sua clinica pode estar pagando ate 4 vezes mais imposto do que deveria. O Dr. Osmar avalia sem compromisso, me avisa se tiver interesse.`;
         else if (tese === 'TEA/Tema 324')
-          msg = `${nome}, os gastos com terapias do seu dependente podem ser deduzidos no imposto de renda. O Dr. Osmar pode ver quanto da pra recuperar, me chama quando puder.`;
+          fixo = `${nome}, os gastos com terapias do seu dependente podem ser deduzidos no imposto de renda. O Dr. Osmar pode ver quanto da pra recuperar, me chama quando puder.`;
         else
-          msg = `${nome}, o Dr. Osmar ainda tem horarios essa semana. A consulta inicial e sem compromisso e ele pode avaliar o seu caso. Posso agendar para voce?`;
+          fixo = `${nome}, o Dr. Osmar ainda tem horarios essa semana. A consulta inicial e sem compromisso e ele pode avaliar o seu caso. Posso agendar para voce?`;
+
+        const msg = await getSmartMsg(fixo, 3);
 
         console.log(`[FOLLOWUP-24h] ${conv.telefone} (${nome}) — texto`);
-        await whatsapp.sendText(conv.telefone, msg);
-        await db.saveMessage(conv.id, 'assistant', msg);
+        await sendFollowUp(msg, false);
         await db.trackEvent(conv.id, conv.leads?.id, 'followup_24h', nome);
       }
 
-      // 4º FOLLOW-UP: 72h → áudio final
+      // 4º FOLLOW-UP: 72h → áudio final inteligente
       if (followUpCount === 4 && hoursAgo >= 48 && hoursAgo < 96) {
-        const msg = `${nome}, tudo bem? Aqui é a Ana do escritorio do Dr. Osmar Neves. Essa e a minha ultima mensagem sobre o assunto, nao quero te incomodar. Mas caso mude de ideia, estamos a disposicao. O Dr. Osmar pode fazer uma analise inicial sem compromisso. E so me chamar por aqui. Te desejo tudo de bom.`;
+        const fixo = `${nome}, tudo bem? Aqui é a Ana do escritorio do Dr. Osmar Neves. Essa e a minha ultima mensagem sobre o assunto, nao quero te incomodar. Mas caso mude de ideia, estamos a disposicao. O Dr. Osmar pode fazer uma analise inicial sem compromisso. E so me chamar por aqui. Te desejo tudo de bom.`;
+        const msg = await getSmartMsg(fixo, 4);
 
         console.log(`[FOLLOWUP-72h] ${conv.telefone} (${nome}) — áudio final`);
-
-        if (audio) {
-          const audioBase64 = await audio.gerarAudio(msg);
-          if (audioBase64) {
-            await whatsapp.sendAudio(conv.telefone, audioBase64);
-          } else {
-            await whatsapp.sendText(conv.telefone, msg);
-          }
-        } else {
-          await whatsapp.sendText(conv.telefone, msg);
-        }
-        await db.saveMessage(conv.id, 'assistant', msg);
+        await sendFollowUp(msg, true);
         await db.trackEvent(conv.id, conv.leads?.id, 'followup_72h_audio', nome);
       }
     }

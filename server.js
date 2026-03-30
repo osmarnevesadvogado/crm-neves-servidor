@@ -222,17 +222,23 @@ async function processBufferedMessage(phone, text, senderName, respondComAudio =
               await db.updateLead(lead.id, { etapa_funil: 'convertido' });
               console.log(`[CALENDAR] Consulta agendada automaticamente: ${evento.inicio}`);
 
-              // Enviar email de confirmação
-              if (email && leadAtualizado.email) {
-                const partes = evento.inicio.match(/(\w+)\s*\(([^)]+)\)\s*às\s*(\d+)h/);
-                await email.enviarConfirmacao({
-                  nome: leadAtualizado.nome || finalName || 'Cliente',
-                  email: leadAtualizado.email,
-                  data: partes ? partes[2] : evento.inicio,
-                  horario: partes ? `${partes[3]}h` : '',
-                  formato: evento.formato || 'online',
-                  assunto: leadAtualizado.tese_interesse || ''
-                });
+              // Enviar confirmação por áudio + texto no WhatsApp
+              const nomeCliente = leadAtualizado.nome || finalName || 'Cliente';
+              const assunto = leadAtualizado.tese_interesse || 'consulta jurídica';
+              const formato = textoCompleto.toLowerCase().includes('presencial') ? 'presencial' : 'online';
+              const resumo = `Consulta confirmada! ${evento.inicio}, ${formato === 'presencial' ? 'presencial no escritório em Belém' : 'online'}. Cliente: Sr(a) ${nomeCliente}. Assunto: ${assunto}. Consulta com o Dr. Osmar Neves. Qualquer duvida, me chame por aqui.`;
+
+              // Enviar texto com resumo
+              await whatsapp.sendText(phone, resumo);
+              await db.saveMessage(conversa.id, 'assistant', resumo);
+
+              // Enviar áudio da confirmação
+              if (audio) {
+                const audioConfirm = await audio.gerarAudio(resumo);
+                if (audioConfirm) {
+                  await whatsapp.sendAudio(phone, audioConfirm);
+                  console.log(`[AUDIO] Confirmação de agendamento em áudio enviada para ${phone}`);
+                }
               }
             }
           }
@@ -264,18 +270,23 @@ function isHotLead(text) {
 }
 
 // ===== FOLLOW-UP AUTOMÁTICO =====
+// Estratégia:
+// 1º follow-up: 2h sem resposta → texto perguntando se tem dúvidas
+// 2º follow-up: 4h sem resposta → áudio mais acolhedor
+// 3º follow-up: 24h → texto com argumento da tese
+// 4º follow-up: 72h → áudio final com gatilho de urgência
 async function checkFollowUps() {
   try {
     const eligible = await db.getEligibleConversas();
     if (eligible.length === 0) return;
 
     const conversaIds = eligible.map(c => c.id);
-    const allMsgs = await db.getRecentMessages(conversaIds, 3);
+    const allMsgs = await db.getRecentMessages(conversaIds, 5);
 
     const msgsByConv = {};
     for (const msg of allMsgs) {
       if (!msgsByConv[msg.conversa_id]) msgsByConv[msg.conversa_id] = [];
-      if (msgsByConv[msg.conversa_id].length < 3) {
+      if (msgsByConv[msg.conversa_id].length < 5) {
         msgsByConv[msg.conversa_id].push(msg);
       }
     }
@@ -289,41 +300,87 @@ async function checkFollowUps() {
       const lastMsg = lastMsgs[0];
       const hoursAgo = (now - new Date(lastMsg.criado_em).getTime()) / (1000 * 60 * 60);
 
-      // Follow-up 24h
-      if (lastMsg.role === 'assistant' && hoursAgo >= 24 && hoursAgo < 48) {
-        if (lastMsgs.filter(m => m.role === 'assistant').length >= 2) continue;
+      // Só faz follow-up se a última mensagem foi da Ana (lead não respondeu)
+      if (lastMsg.role !== 'assistant') continue;
 
-        const nome = conv.leads.nome || 'amigo(a)';
-        const tese = conv.leads.tese_interesse || 'sua questão jurídica';
-        const msg = `Olá, ${nome}! Tudo bem? Passando aqui sobre ${tese}. O Dr. Osmar ainda tem horários essa semana, posso te ajudar?`;
-
-        console.log(`[FOLLOWUP-24h] ${conv.telefone} (${nome})`);
-        await db.saveMessage(conv.id, 'assistant', msg);
-        await whatsapp.sendText(conv.telefone, msg);
-        await db.trackEvent(conv.id, conv.leads.id, 'followup_24h', nome);
+      // Contar quantos follow-ups já foram feitos (msgs consecutivas da Ana)
+      let followUpCount = 0;
+      for (const m of lastMsgs) {
+        if (m.role === 'assistant') followUpCount++;
+        else break;
       }
 
-      // Follow-up 72h
-      if (lastMsg.role === 'assistant' && hoursAgo >= 72 && hoursAgo < 96) {
-        if (lastMsgs.filter(m => m.role === 'assistant').length >= 3) continue;
+      const nome = conv.leads?.nome || 'amigo(a)';
+      const tese = conv.leads?.tese_interesse || 'sua questão jurídica';
 
-        const nome = conv.leads.nome || 'amigo(a)';
-        const tese = conv.leads.tese_interesse;
+      // 1º FOLLOW-UP: 2h sem resposta → texto
+      if (followUpCount === 1 && hoursAgo >= 2 && hoursAgo < 4) {
+        const msg = `${nome}, tudo bem? Ficou com alguma duvida? Estou aqui para te ajudar com ${tese}. Pode me perguntar qualquer coisa.`;
+
+        console.log(`[FOLLOWUP-2h] ${conv.telefone} (${nome}) — texto`);
+        await whatsapp.sendText(conv.telefone, msg);
+        await db.saveMessage(conv.id, 'assistant', msg);
+        await db.trackEvent(conv.id, conv.leads?.id, 'followup_2h', nome);
+      }
+
+      // 2º FOLLOW-UP: 4h sem resposta → áudio
+      if (followUpCount === 2 && hoursAgo >= 2 && hoursAgo < 20) {
+        const msg = `${nome}, aqui é a Ana do escritório do Dr. Osmar. Passando para saber se posso te ajudar. O Dr. Osmar tem horarios disponiveis essa semana e a consulta inicial e sem compromisso. Me chama quando puder, estou por aqui.`;
+
+        console.log(`[FOLLOWUP-4h] ${conv.telefone} (${nome}) — áudio`);
+
+        // Enviar como áudio
+        if (audio) {
+          const audioBase64 = await audio.gerarAudio(msg);
+          if (audioBase64) {
+            await whatsapp.sendAudio(conv.telefone, audioBase64);
+          } else {
+            await whatsapp.sendText(conv.telefone, msg);
+          }
+        } else {
+          await whatsapp.sendText(conv.telefone, msg);
+        }
+        await db.saveMessage(conv.id, 'assistant', msg);
+        await db.trackEvent(conv.id, conv.leads?.id, 'followup_4h_audio', nome);
+      }
+
+      // 3º FOLLOW-UP: 24h → texto com argumento da tese
+      if (followUpCount === 3 && hoursAgo >= 20 && hoursAgo < 48) {
         let msg = '';
 
         if (tese === 'IR Isenção')
-          msg = `${nome}, enquanto não entra com o pedido, o imposto continua sendo descontado. O Dr. Osmar pode analisar sem compromisso, é só me chamar!`;
+          msg = `${nome}, enquanto nao entra com o pedido, o imposto continua sendo descontado do seu salario. O Dr. Osmar pode analisar sem compromisso, e so me chamar.`;
         else if (tese === 'Equiparação Hospitalar')
-          msg = `${nome}, sua clínica pode estar pagando até 4x mais imposto. O Dr. Osmar avalia sem compromisso, me avisa se tiver interesse!`;
+          msg = `${nome}, sua clinica pode estar pagando ate 4 vezes mais imposto do que deveria. O Dr. Osmar avalia sem compromisso, me avisa se tiver interesse.`;
         else if (tese === 'TEA/Tema 324')
-          msg = `${nome}, os gastos com seu dependente podem ser deduzidos no IR. O Dr. Osmar pode ver quanto dá pra recuperar, me chama quando puder!`;
+          msg = `${nome}, os gastos com terapias do seu dependente podem ser deduzidos no imposto de renda. O Dr. Osmar pode ver quanto da pra recuperar, me chama quando puder.`;
         else
-          msg = `${nome}, caso mude de ideia, estamos à disposição. O Dr. Osmar pode fazer uma análise inicial sem compromisso!`;
+          msg = `${nome}, o Dr. Osmar ainda tem horarios essa semana. A consulta inicial e sem compromisso e ele pode avaliar o seu caso. Posso agendar para voce?`;
 
-        console.log(`[FOLLOWUP-72h] ${conv.telefone} (${nome})`);
-        await db.saveMessage(conv.id, 'assistant', msg);
+        console.log(`[FOLLOWUP-24h] ${conv.telefone} (${nome}) — texto`);
         await whatsapp.sendText(conv.telefone, msg);
-        await db.trackEvent(conv.id, conv.leads.id, 'followup_72h', nome);
+        await db.saveMessage(conv.id, 'assistant', msg);
+        await db.trackEvent(conv.id, conv.leads?.id, 'followup_24h', nome);
+      }
+
+      // 4º FOLLOW-UP: 72h → áudio final
+      if (followUpCount === 4 && hoursAgo >= 48 && hoursAgo < 96) {
+        const msg = `${nome}, tudo bem? Aqui é a Ana do escritorio do Dr. Osmar Neves. Essa e a minha ultima mensagem sobre o assunto, nao quero te incomodar. Mas caso mude de ideia, estamos a disposicao. O Dr. Osmar pode fazer uma analise inicial sem compromisso. E so me chamar por aqui. Te desejo tudo de bom.`;
+
+        console.log(`[FOLLOWUP-72h] ${conv.telefone} (${nome}) — áudio final`);
+
+        if (audio) {
+          const audioBase64 = await audio.gerarAudio(msg);
+          if (audioBase64) {
+            await whatsapp.sendAudio(conv.telefone, audioBase64);
+          } else {
+            await whatsapp.sendText(conv.telefone, msg);
+          }
+        } else {
+          await whatsapp.sendText(conv.telefone, msg);
+        }
+        await db.saveMessage(conv.id, 'assistant', msg);
+        await db.trackEvent(conv.id, conv.leads?.id, 'followup_72h_audio', nome);
       }
     }
   } catch (e) {
@@ -331,14 +388,14 @@ async function checkFollowUps() {
   }
 }
 
-// Agendar follow-ups (8h-20h Belém, a cada 2 horas)
+// Agendar follow-ups (8h-20h Belém, a cada 30 minutos)
 setInterval(() => {
   const belemHour = new Date().toLocaleString('en-US', { timeZone: 'America/Belem', hour: 'numeric', hour12: false });
   if (parseInt(belemHour) >= 8 && parseInt(belemHour) <= 20) {
     console.log('[FOLLOWUP] Verificando...');
     checkFollowUps();
   }
-}, 2 * 60 * 60 * 1000);
+}, 30 * 60 * 1000);
 setTimeout(() => checkFollowUps(), 60 * 1000);
 
 // ===== WEBHOOK Z-API =====

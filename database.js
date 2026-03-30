@@ -225,6 +225,53 @@ async function getMetricas() {
   };
 }
 
+// ===== TAREFAS =====
+
+async function createTarefa(tarefa) {
+  try {
+    const { data, error } = await supabase
+      .from('tarefas')
+      .insert(tarefa)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[TAREFA] Erro ao criar:', error.message);
+      return null;
+    }
+    console.log(`[TAREFA] Criada: ${tarefa.descricao}`);
+    return data;
+  } catch (e) {
+    console.error('[TAREFA] Erro:', e.message);
+    return null;
+  }
+}
+
+// ===== CLIENTES (busca por telefone) =====
+
+async function findClienteByPhone(phone) {
+  const { cleanPhone } = require('./whatsapp');
+  const tel = cleanPhone(phone);
+  const { data } = await supabase
+    .from('clientes')
+    .select('id')
+    .eq('telefone', tel)
+    .limit(1)
+    .single();
+  return data;
+}
+
+async function findCasoByCliente(clienteId) {
+  const { data } = await supabase
+    .from('casos')
+    .select('id')
+    .eq('cliente_id', clienteId)
+    .order('criado_em', { ascending: false })
+    .limit(1)
+    .single();
+  return data;
+}
+
 module.exports = {
   supabase,
   getOrCreateConversa,
@@ -240,5 +287,8 @@ module.exports = {
   getEligibleConversas,
   listConversas,
   getConversaMensagens,
-  getMetricas
+  getMetricas,
+  createTarefa,
+  findClienteByPhone,
+  findCasoByCliente
 };

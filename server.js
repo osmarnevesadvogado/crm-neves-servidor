@@ -240,6 +240,28 @@ async function processBufferedMessage(phone, text, senderName, respondComAudio =
                   console.log(`[AUDIO] Confirmação de agendamento em áudio enviada para ${phone}`);
                 }
               }
+
+              // Criar tarefa automática para a consulta
+              try {
+                // Tentar vincular a um caso existente
+                const cliente = await db.findClienteByPhone(phone);
+                const caso = cliente ? await db.findCasoByCliente(cliente.id) : null;
+
+                // Extrair data da consulta para a tarefa
+                const dataConsulta = slot.inicio ? new Date(slot.inicio).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+                await db.createTarefa({
+                  caso_id: caso?.id || null,
+                  descricao: `Consulta agendada: ${nomeCliente} - ${assunto} (${formato})`,
+                  data_limite: dataConsulta,
+                  prioridade: 'alta',
+                  responsavel: 'Osmar',
+                  status: 'pendente'
+                });
+                console.log(`[TAREFA] Tarefa de consulta criada para ${nomeCliente}`);
+              } catch (e) {
+                console.error('[TAREFA] Erro ao criar tarefa:', e.message);
+              }
             }
           }
         } catch (e) {

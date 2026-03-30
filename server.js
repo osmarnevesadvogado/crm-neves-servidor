@@ -176,9 +176,20 @@ async function processBufferedMessage(phone, text, senderName, respondComAudio =
       await db.trackEvent(conversa.id, lead.id, 'lead_quente', combinedText.slice(0, 100));
     }
 
-    // Gerar e enviar resposta (passa lead atualizado para a IA montar a ficha)
+    // Buscar contexto CRM completo (cliente, casos, tarefas, financeiro)
+    let contexto = null;
+    try {
+      contexto = await db.getContextoCompleto(phone);
+      if (contexto.tipo === 'cliente') {
+        console.log(`[CRM] ${phone} é CLIENTE: ${contexto.cliente.nome_completo || contexto.cliente.razao_social} | ${contexto.casos.length} caso(s) | ${contexto.financeiro.length} pendência(s)`);
+      }
+    } catch (e) {
+      console.log('[CRM] Erro ao buscar contexto:', e.message);
+    }
+
+    // Gerar e enviar resposta (passa lead atualizado + contexto CRM para a IA montar a ficha)
     const history = await db.getHistory(conversa.id);
-    const rawReply = await ia.generateResponse(history, combinedText, conversa.id, leadAtualizado);
+    const rawReply = await ia.generateResponse(history, combinedText, conversa.id, leadAtualizado, contexto);
     const reply = ia.trimResponse(rawReply);
     await db.saveMessage(conversa.id, 'assistant', reply);
 
@@ -649,15 +660,85 @@ app.get('/api/metricas', async (req, res) => {
   }
 });
 
+// ===== RELATÓRIO SEMANAL =====
+
+async function enviarRelatorioSemanal() {
+  try {
+    const r = await db.getRelatorioSemanal();
+    const hoje = new Date().toLocaleDateString('pt-BR');
+
+    const msg = `Relatorio Semanal - Neves Advocacia
+${hoje}
+
+Novos leads: ${r.leadsNovos}
+Convertidos: ${r.convertidos}
+Agendamentos: ${r.agendamentos}
+Leads ativos no funil: ${r.leadsAtivos}
+
+Recebido na semana: R$ ${r.totalRecebido.toFixed(2)}
+Cobrancas atrasadas: ${r.cobrancasAtrasadas} (R$ ${r.totalAtrasado.toFixed(2)})
+Tarefas vencidas: ${r.tarefasVencidas}
+
+Bom trabalho, Dr. Osmar!`;
+
+    await whatsapp.sendText(config.OSMAR_PHONE, msg);
+    console.log(`[RELATORIO] Semanal enviado para ${config.OSMAR_PHONE}`);
+    return msg;
+  } catch (e) {
+    console.error('[RELATORIO] Erro:', e.message);
+    return null;
+  }
+}
+
+// Verificar se é segunda-feira às 8h para enviar relatório
+setInterval(async () => {
+  const agora = new Date();
+  // Ajustar para horário de Belém (UTC-3)
+  const belem = new Date(agora.getTime() - 3 * 60 * 60 * 1000);
+  const dia = belem.getUTCDay(); // 1 = segunda
+  const hora = belem.getUTCHours();
+  const min = belem.getUTCMinutes();
+
+  // Segunda-feira, entre 8:00 e 8:14 (margem do intervalo de 15min)
+  if (dia === 1 && hora === 8 && min < 15) {
+    // Verificar se já enviou hoje
+    const chave = `relatorio_${belem.toISOString().slice(0, 10)}`;
+    if (!global._relatorioEnviado || global._relatorioEnviado !== chave) {
+      global._relatorioEnviado = chave;
+      await enviarRelatorioSemanal();
+    }
+  }
+}, 15 * 60 * 1000); // Verificar a cada 15 minutos
+
+// Rota manual para enviar relatório
+app.post('/api/relatorio-semanal', async (req, res) => {
+  const msg = await enviarRelatorioSemanal();
+  if (msg) {
+    res.json({ ok: true, msg });
+  } else {
+    res.status(500).json({ error: 'Erro ao gerar relatório' });
+  }
+});
+
+app.get('/api/relatorio-semanal', async (req, res) => {
+  try {
+    const r = await db.getRelatorioSemanal();
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== INICIAR =====
 app.listen(config.PORT, () => {
   console.log('');
-  console.log('CRM Neves Advocacia - Servidor v2');
+  console.log('CRM Neves Advocacia - Servidor v3');
   console.log(`Rodando em http://localhost:${config.PORT}`);
   console.log(`Claude: ${config.ANTHROPIC_API_KEY ? 'OK' : 'Faltando'}`);
   console.log(`Z-API: ${config.ZAPI_INSTANCE ? 'OK' : 'Faltando'}`);
   console.log(`Supabase: ${config.SUPABASE_URL ? 'OK' : 'Faltando'}`);
-  console.log(`OpenAI: ${config.OPENAI_API_KEY ? 'OK (áudio ativo)' : 'Faltando (áudio desativado)'}`);
+  console.log(`OpenAI: ${config.OPENAI_API_KEY ? 'OK (audio ativo)' : 'Faltando (audio desativado)'}`);
+  console.log(`Relatorio semanal: Segunda 8h (Belem) via WhatsApp`);
   console.log(`Webhook: POST ${config.RENDER_URL || 'http://localhost:' + config.PORT}/webhook/zapi`);
   console.log('');
 });

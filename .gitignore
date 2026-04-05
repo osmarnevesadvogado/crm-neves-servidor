@@ -1,0 +1,24 @@
+# Variáveis de ambiente (NUNCA commitar)
+.env
+.env.*
+.env.local
+.env.production
+
+# Credenciais
+credentials.json
+service-account.json
+*.pem
+*.key
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.vscode/
+.idea/

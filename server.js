@@ -17,8 +17,25 @@ let audio;
 try { audio = require('./audio'); } catch (e) { console.log('[INIT] Audio não disponível'); }
 
 const app = express();
-app.use(cors());
+
+// CORS restrito — aceita apenas origens confiáveis
+const allowedOrigins = (process.env.CORS_ORIGINS || '').split(',').filter(Boolean);
+app.use(cors({
+  origin: allowedOrigins.length > 0
+    ? (origin, cb) => (!origin || allowedOrigins.includes(origin)) ? cb(null, true) : cb(new Error('CORS bloqueado'))
+    : false
+}));
+
 app.use(express.json());
+
+// Middleware de autenticação para rotas administrativas
+function requireAdmin(req, res, next) {
+  const token = req.headers['authorization']?.replace('Bearer ', '') || req.headers['x-admin-token'];
+  if (!config.ADMIN_TOKEN || token !== config.ADMIN_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
 
 // ===== BUFFER DE MENSAGENS =====
 const messageBuffer = new Map();
@@ -446,12 +463,10 @@ app.post('/webhook/zapi', async (req, res) => {
       return res.status(429).json({ error: 'Too many requests' });
     }
 
-    // Validar token (se configurado)
-    if (config.ZAPI_WEBHOOK_TOKEN) {
-      const received = req.headers['x-api-key'] || req.headers['authorization'] || req.query.token;
-      if (received !== config.ZAPI_WEBHOOK_TOKEN) {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
+    // Validar token (OBRIGATÓRIO)
+    const received = req.headers['x-api-key'] || req.headers['authorization'];
+    if (!config.ZAPI_WEBHOOK_TOKEN || received !== config.ZAPI_WEBHOOK_TOKEN) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const body = req.body;
@@ -570,7 +585,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.get('/api/test/zapi', async (req, res) => {
+app.get('/api/test/zapi', requireAdmin, async (req, res) => {
   try {
     const r = await fetch(`${config.ZAPI_BASE}/status`, { headers: { 'Client-Token': config.ZAPI_CLIENT_TOKEN } });
     res.json(await r.json());
@@ -579,7 +594,7 @@ app.get('/api/test/zapi', async (req, res) => {
   }
 });
 
-app.get('/api/test/calendar', async (req, res) => {
+app.get('/api/test/calendar', requireAdmin, async (req, res) => {
   try {
     if (!calendar) return res.status(500).json({ ok: false, error: 'Módulo calendar não carregado' });
     const slots = await calendar.getHorariosDisponiveis(3);
@@ -595,7 +610,7 @@ app.get('/api/test/calendar', async (req, res) => {
   }
 });
 
-app.get('/api/test/claude', async (req, res) => {
+app.get('/api/test/claude', requireAdmin, async (req, res) => {
   try {
     const Anthropic = require('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
@@ -610,7 +625,7 @@ app.get('/api/test/claude', async (req, res) => {
   }
 });
 
-app.get('/api/conversas', async (req, res) => {
+app.get('/api/conversas', requireAdmin, async (req, res) => {
   try {
     res.json(await db.listConversas());
   } catch (e) {
@@ -618,7 +633,7 @@ app.get('/api/conversas', async (req, res) => {
   }
 });
 
-app.get('/api/conversas/:id/mensagens', async (req, res) => {
+app.get('/api/conversas/:id/mensagens', requireAdmin, async (req, res) => {
   try {
     res.json(await db.getConversaMensagens(req.params.id));
   } catch (e) {
@@ -626,7 +641,7 @@ app.get('/api/conversas/:id/mensagens', async (req, res) => {
   }
 });
 
-app.post('/api/enviar', async (req, res) => {
+app.post('/api/enviar', requireAdmin, async (req, res) => {
   try {
     const { phone, message, conversaId } = req.body;
     if (!phone || !message) return res.status(400).json({ error: 'phone e message obrigatórios' });
@@ -638,21 +653,21 @@ app.post('/api/enviar', async (req, res) => {
   }
 });
 
-app.post('/api/pausar', (req, res) => {
+app.post('/api/pausar', requireAdmin, (req, res) => {
   const { phone, minutes } = req.body;
   if (!phone) return res.status(400).json({ error: 'phone obrigatório' });
   pauseAI(phone, minutes || 30);
   res.json({ ok: true, msg: `IA pausada para ${phone} por ${minutes || 30} minutos` });
 });
 
-app.post('/api/retomar', (req, res) => {
+app.post('/api/retomar', requireAdmin, (req, res) => {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: 'phone obrigatório' });
   pausedConversas.delete(whatsapp.cleanPhone(phone));
   res.json({ ok: true, msg: `IA retomada para ${phone}` });
 });
 
-app.get('/api/metricas', async (req, res) => {
+app.get('/api/metricas', requireAdmin, async (req, res) => {
   try {
     res.json(await db.getMetricas());
   } catch (e) {
@@ -711,7 +726,7 @@ setInterval(async () => {
 }, 15 * 60 * 1000); // Verificar a cada 15 minutos
 
 // Rota manual para enviar relatório
-app.post('/api/relatorio-semanal', async (req, res) => {
+app.post('/api/relatorio-semanal', requireAdmin, async (req, res) => {
   const msg = await enviarRelatorioSemanal();
   if (msg) {
     res.json({ ok: true, msg });
@@ -720,7 +735,7 @@ app.post('/api/relatorio-semanal', async (req, res) => {
   }
 });
 
-app.get('/api/relatorio-semanal', async (req, res) => {
+app.get('/api/relatorio-semanal', requireAdmin, async (req, res) => {
   try {
     const r = await db.getRelatorioSemanal();
     res.json(r);
@@ -729,16 +744,26 @@ app.get('/api/relatorio-semanal', async (req, res) => {
   }
 });
 
+// ===== VALIDAÇÃO DE VARIÁVEIS OBRIGATÓRIAS =====
+const requiredVars = ['ANTHROPIC_API_KEY', 'SUPABASE_URL', 'SUPABASE_KEY', 'ZAPI_WEBHOOK_TOKEN', 'OSMAR_PHONE', 'ADMIN_TOKEN'];
+const missing = requiredVars.filter(v => !config[v]);
+if (missing.length > 0) {
+  console.error(`[ERRO FATAL] Variáveis obrigatórias não configuradas: ${missing.join(', ')}`);
+  console.error('Configure no .env antes de iniciar o servidor.');
+  process.exit(1);
+}
+
 // ===== INICIAR =====
 app.listen(config.PORT, () => {
   console.log('');
-  console.log('CRM Neves Advocacia - Servidor v3');
+  console.log('CRM Neves Advocacia - Servidor v4 (Segurança reforçada)');
   console.log(`Rodando em http://localhost:${config.PORT}`);
-  console.log(`Claude: ${config.ANTHROPIC_API_KEY ? 'OK' : 'Faltando'}`);
+  console.log(`Claude: OK`);
   console.log(`Z-API: ${config.ZAPI_INSTANCE ? 'OK' : 'Faltando'}`);
-  console.log(`Supabase: ${config.SUPABASE_URL ? 'OK' : 'Faltando'}`);
+  console.log(`Supabase: OK`);
   console.log(`OpenAI: ${config.OPENAI_API_KEY ? 'OK (audio ativo)' : 'Faltando (audio desativado)'}`);
-  console.log(`Relatorio semanal: Segunda 8h (Belem) via WhatsApp`);
-  console.log(`Webhook: POST ${config.RENDER_URL || 'http://localhost:' + config.PORT}/webhook/zapi`);
+  console.log(`Webhook: Protegido por token`);
+  console.log(`Rotas admin: Protegidas por ADMIN_TOKEN`);
+  console.log(`CORS: ${allowedOrigins.length > 0 ? allowedOrigins.join(', ') : 'Bloqueado (configure CORS_ORIGINS)'}`);
   console.log('');
 });

@@ -25,8 +25,11 @@ module.exports = {
     return `https://api.z-api.io/instances/${this.ZAPI_INSTANCE}/token/${this.ZAPI_TOKEN}`;
   },
 
-  // Telefone do Dr. Osmar para notificações
-  OSMAR_PHONE: process.env.OSMAR_PHONE || '5591981018757',
+  // Telefone do Dr. Osmar para notificações (OBRIGATÓRIO via .env)
+  OSMAR_PHONE: process.env.OSMAR_PHONE,
+
+  // Token de autenticação para rotas administrativas
+  ADMIN_TOKEN: process.env.ADMIN_TOKEN,
 
   // Buffer de mensagens
   BUFFER_DELAY: 8000, // 8 segundos

@@ -34,9 +34,9 @@ Se a pessoa JÁ disse o assunto junto com o oi, mostre que entendeu e pergunte o
 
   [ETAPAS.QUALIFICACAO]: {
     instrucao: `ETAPA: QUALIFICAÇÃO
-Você já sabe o assunto. Mostre que entendeu o problema e que o Dr. Osmar pode ajudar.
-Se NÃO tem o nome: peça o nome para consultar a agenda.
-Se JÁ tem o nome: confirme que entendeu o caso em 1 frase e peça o email.
+Você já sabe o assunto. Mostre empatia e que o Dr. Osmar pode ajudar.
+Se NÃO tem o nome: peça o nome para já consultar a agenda.
+Se JÁ tem o nome: confirme que entendeu em 1 frase e parta para oferecer horários.
 LEMBRE: "certo", "isso", "sim" = confirmação. Avance, não repita.
 Máximo 2 trocas aqui, depois proponha agendar.`,
 
@@ -56,9 +56,9 @@ Máximo 2 trocas aqui, depois proponha agendar.`,
   [ETAPAS.PROPOSTA]: {
     instrucao: `ETAPA: PROPOSTA
 Chame pelo NOME. O foco agora é AGENDAR, não perguntar mais sobre o problema.
-Se não tem EMAIL: peça o email para enviar a confirmação.
-Se já tem email: "Deixa eu consultar a agenda do Dr. Osmar..." e proponha horários.
-Tom profissional: "Temos disponibilidade essa semana" / "Consigo encaixar um horário para você".
+Consulte a agenda e proponha 2-3 horários: "Deixa eu ver a agenda do Dr. Osmar..."
+Tom profissional: "Temos disponibilidade essa semana" / "Consigo encaixar um horário para voce".
+Pergunte se prefere presencial (Belém) ou online.
 NÃO repita informações do caso. Avance para o agendamento.`,
 
     avanca: (text, lead) => {
@@ -140,13 +140,12 @@ async function getInstrucaoEtapa(conversaId, horariosTexto) {
     return `ETAPA ATUAL: AGENDAMENTO
 Seu objetivo agora: confirmar dia, horário e formato da consulta.
 
-HORÁRIOS DISPONÍVEIS DO DR. OSMAR (consulte a agenda real):
+HORÁRIOS DISPONÍVEIS DO DR. OSMAR (agenda real):
 ${horariosTexto}
 
 - Ofereça 2 ou 3 desses horários para a pessoa escolher
 - Pergunte se prefere presencial (Belém/PA) ou online
-- Se ainda não tem email, peça agora
-- Quando confirmar: "Perfeito! Consulta marcada pra [dia] às [hora], [formato]. O Dr. Osmar vai te atender!"
+- Quando confirmar: "Agendado! [dia] às [hora], consulta do(a) Sr(a) [nome] com o Dr. Osmar sobre [assunto]. Qualquer duvida, estou por aqui."
 - NUNCA invente horários, use SOMENTE os listados acima`;
   }
 

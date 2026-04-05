@@ -392,6 +392,21 @@ async function getRelatorioSemanal() {
   };
 }
 
+// ===== ARQUIVOS PESSOAIS =====
+
+async function listarArquivos(limit = 10) {
+  try {
+    const { data } = await supabase
+      .from('arquivos_pessoais')
+      .select('*')
+      .order('criado_em', { ascending: false })
+      .limit(limit);
+    return data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
 module.exports = {
   supabase,
   getOrCreateConversa,
@@ -412,5 +427,6 @@ module.exports = {
   findClienteByPhone,
   findCasoByCliente,
   getContextoCompleto,
-  getRelatorioSemanal
+  getRelatorioSemanal,
+  listarArquivos
 };

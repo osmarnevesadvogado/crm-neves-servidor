@@ -6,8 +6,9 @@ require('dotenv').config();
 module.exports = {
   // Anthropic (Claude)
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-  CLAUDE_MODEL: 'claude-haiku-4-5-20251001',
-  MAX_TOKENS: 200,
+  CLAUDE_MODEL: 'claude-sonnet-4-6',
+  MAX_TOKENS: 350,
+  MAX_HISTORY: 20,
 
   // OpenAI (Whisper + TTS)
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,

@@ -14,7 +14,11 @@ try { calendar = require('./calendar'); } catch (e) { console.log('[INIT] Calend
 let email;
 try { email = require('./email'); } catch (e) { console.log('[INIT] Email não disponível'); }
 let audio;
-try { audio = require('./audio'); } catch (e) { console.log('[INIT] Audio não disponível'); }
+try { audio = require('./audio'); } catch (e) { console.log('[INIT] Audio n��o disponível'); }
+let assistentePessoal;
+try { assistentePessoal = require('./assistente-pessoal'); } catch (e) { console.log('[INIT] Assistente pessoal não disponível'); }
+let arquivos;
+try { arquivos = require('./arquivos'); } catch (e) { console.log('[INIT] Módulo arquivos não disponível'); }
 
 const app = express();
 
@@ -117,6 +121,75 @@ function checkRateLimit(ip) {
   return entry.count <= config.RATE_LIMIT_MAX;
 }
 setInterval(() => { rateLimitMap.clear(); }, 5 * 60 * 1000);
+
+// ===== VERIFICAR SE É O DR. OSMAR =====
+function isOsmar(phone) {
+  if (!config.OSMAR_PHONE) return false;
+  return whatsapp.cleanPhone(phone) === whatsapp.cleanPhone(config.OSMAR_PHONE);
+}
+
+// ===== PROCESSAMENTO MODO PESSOAL (DR. OSMAR) =====
+async function processOsmarMessage(phone, text, respondComAudio = false) {
+  try {
+    console.log(`[PESSOAL] Dr. Osmar: ${text.slice(0, 80)}`);
+
+    const conversa = await db.getOrCreateConversa(phone);
+    await db.saveMessage(conversa.id, 'user', text);
+
+    if (!assistentePessoal) {
+      await whatsapp.sendText(phone, 'Modulo assistente pessoal nao disponivel. Verifique o servidor.');
+      return;
+    }
+
+    const history = await db.getHistory(conversa.id);
+    const rawReply = await assistentePessoal.generateResponse(history, text);
+    const reply = ia.trimResponse(rawReply);
+    await db.saveMessage(conversa.id, 'assistant', reply);
+
+    if (respondComAudio && audio) {
+      const audioBase64 = await audio.gerarAudio(reply);
+      if (audioBase64) {
+        await whatsapp.sendAudio(phone, audioBase64);
+      } else {
+        await whatsapp.sendText(phone, reply);
+      }
+    } else {
+      await whatsapp.sendText(phone, reply);
+    }
+
+    console.log(`[PESSOAL] Resposta: ${reply.slice(0, 80)}...`);
+  } catch (e) {
+    console.error('[PESSOAL] Erro:', e.message);
+  }
+}
+
+// ===== PROCESSAR ARQUIVO DO DR. OSMAR =====
+async function processOsmarFile(phone, fileUrl, fileName, caption) {
+  try {
+    if (!arquivos) {
+      await whatsapp.sendText(phone, 'Modulo de arquivos nao disponivel. Verifique o servidor.');
+      return;
+    }
+
+    console.log(`[ARQUIVOS] Recebido de Dr. Osmar: ${fileName || 'arquivo'}`);
+    const resultado = await arquivos.salvarArquivo(fileUrl, fileName, caption);
+
+    if (resultado) {
+      const tamanhoKB = (resultado.tamanho / 1024).toFixed(1);
+      await whatsapp.sendText(phone, `Salvo na gaveta, Dr. Osmar. ${resultado.nome} (${resultado.tipo}, ${tamanhoKB} KB).`);
+
+      // Salvar registro na conversa
+      const conversa = await db.getOrCreateConversa(phone);
+      await db.saveMessage(conversa.id, 'user', `[Arquivo enviado: ${resultado.nome}] ${caption || ''}`);
+      await db.saveMessage(conversa.id, 'assistant', `Arquivo salvo: ${resultado.path}`);
+    } else {
+      await whatsapp.sendText(phone, 'Dr. Osmar, nao consegui salvar o arquivo. Pode tentar novamente?');
+    }
+  } catch (e) {
+    console.error('[ARQUIVOS] Erro:', e.message);
+    await whatsapp.sendText(phone, 'Erro ao salvar o arquivo. Tente novamente.');
+  }
+}
 
 // ===== PROCESSAMENTO ASSÍNCRONO =====
 async function processBufferedMessage(phone, text, senderName, respondComAudio = false) {
@@ -500,6 +573,55 @@ app.post('/webhook/zapi', async (req, res) => {
     const senderName = body.senderName || body.notifyName || '';
     const isAudio = body.isAudio || body.audio || body.audioMessage || (body.type === 'ReceivedCallback' && body.audio);
     const audioUrl = body.audio?.audioUrl || body.audioMessage?.url || body.audio?.url || body.mediaUrl || null;
+
+    // Detectar arquivos (imagem, documento, planilha, etc.)
+    const fileUrl = body.image?.imageUrl || body.document?.documentUrl || body.image?.url || body.document?.url || body.mediaUrl || null;
+    const fileName = body.document?.fileName || body.image?.caption || body.caption || null;
+    const hasFile = fileUrl && !isAudio;
+
+    // ===== MODO PESSOAL: DR. OSMAR =====
+    if (isOsmar(phone)) {
+      res.json({ status: 'osmar_received' });
+
+      // Arquivo do Dr. Osmar → salvar na gaveta
+      if (hasFile) {
+        processOsmarFile(phone, fileUrl, fileName, text).catch(err =>
+          console.error('[PESSOAL] Erro arquivo:', err.message)
+        );
+        return;
+      }
+
+      // Áudio do Dr. Osmar → transcrever e processar como pessoal
+      if (isAudio || audioUrl) {
+        (async () => {
+          try {
+            if (!audio) {
+              await processOsmarMessage(phone, '[audio sem transcrição]', false);
+              return;
+            }
+            const transcricao = await audio.transcreverAudio(audioUrl);
+            if (transcricao) {
+              await processOsmarMessage(phone, transcricao, true);
+            } else {
+              await whatsapp.sendText(phone, 'Dr. Osmar, nao consegui ouvir o audio. Pode digitar ou enviar novamente?');
+            }
+          } catch (e) {
+            console.error('[PESSOAL] Erro áudio:', e.message);
+          }
+        })();
+        return;
+      }
+
+      // Texto do Dr. Osmar → assistente pessoal
+      if (text) {
+        processOsmarMessage(phone, text, false).catch(err =>
+          console.error('[PESSOAL] Erro texto:', err.message)
+        );
+      }
+      return;
+    }
+
+    // ===== MODO ATENDIMENTO: LEADS/CLIENTES =====
 
     // Se for áudio, transcrever antes de processar
     if (isAudio || audioUrl) {

@@ -125,6 +125,9 @@ setInterval(() => { rateLimitMap.clear(); }, 5 * 60 * 1000);
 // ===== VERIFICAR SE É O DR. OSMAR =====
 function isOsmar(phone) {
   if (!config.OSMAR_PHONE) return false;
+  const cleanIncoming = whatsapp.cleanPhone(phone);
+  const cleanOsmar = whatsapp.cleanPhone(config.OSMAR_PHONE);
+  console.log(`[OSMAR?] Comparando: incoming="${cleanIncoming}" vs osmar="${cleanOsmar}" → ${cleanIncoming === cleanOsmar}`);
   return whatsapp.cleanPhone(phone) === whatsapp.cleanPhone(config.OSMAR_PHONE);
 }
 

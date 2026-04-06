@@ -301,7 +301,7 @@ function trimResponse(text) {
 // A ficha do lead já contém todos os dados importantes
 function buildRecentHistory(history) {
   const recent = history.slice(-(config.MAX_HISTORY || 20));
-  return recent.map(m => ({ role: m.role, content: m.content }));
+  return recent.filter(m => m.role === 'user' || m.role === 'assistant').map(m => ({ role: m.role, content: m.content }));
 }
 
 // ===== GERAR RESPOSTA =====

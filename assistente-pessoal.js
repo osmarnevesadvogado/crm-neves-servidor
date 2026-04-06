@@ -93,7 +93,9 @@ async function buildFichaDados() {
 async function generateResponse(history, userMessage) {
   const fichaDados = await buildFichaDados();
 
-  const recentHistory = history.slice(-(config.MAX_HISTORY || 20)).map(m => ({ role: m.role, content: m.content }));
+  const recentHistory = history.slice(-(config.MAX_HISTORY || 20))
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .map(m => ({ role: m.role, content: m.content }));
 
   const fichaCompleta = `===== FICHA DE DADOS (CRM REAL) =====
 ${fichaDados}

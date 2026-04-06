@@ -179,22 +179,61 @@ async function processOsmarFile(phone, fileUrl, fileName, caption) {
     }
 
     console.log(`[ARQUIVOS] Recebido de Dr. Osmar: ${fileName || 'arquivo'}`);
+
+    // 1. Salvar na gaveta
     const resultado = await arquivos.salvarArquivo(fileUrl, fileName, caption);
+
+    // 2. Extrair texto do documento
+    const textoExtraido = await arquivos.extrairTexto(fileUrl);
+
+    const conversa = await db.getOrCreateConversa(phone);
 
     if (resultado) {
       const tamanhoKB = (resultado.tamanho / 1024).toFixed(1);
-      await whatsapp.sendText(phone, `Salvo na gaveta, Dr. Osmar. ${resultado.nome} (${resultado.tipo}, ${tamanhoKB} KB).`);
-
-      // Salvar registro na conversa
-      const conversa = await db.getOrCreateConversa(phone);
       await db.saveMessage(conversa.id, 'user', `[Arquivo enviado: ${resultado.nome}] ${caption || ''}`);
-      await db.saveMessage(conversa.id, 'assistant', `Arquivo salvo: ${resultado.path}`);
+
+      // 3. Se extraiu texto E tem pedido (caption), analisar com a Ana
+      if (textoExtraido && caption) {
+        await whatsapp.sendText(phone, `Recebi o ${resultado.nome}. Analisando...`);
+
+        const perguntaComDocumento = `O Dr. Osmar enviou o documento "${fileName || 'arquivo'}" e pediu: "${caption}"
+
+===== CONTEÚDO DO DOCUMENTO =====
+${textoExtraido}
+=================================
+
+Analise o documento e responda ao pedido do Dr. Osmar. Seja detalhado e útil.`;
+
+        const history = await db.getHistory(conversa.id);
+        const rawReply = await assistentePessoal.generateResponse(history, perguntaComDocumento);
+        // Não usar trimResponse para análises — precisa da resposta completa
+        const reply = rawReply.length > 1500 ? rawReply.slice(0, 1500) : rawReply;
+        await db.saveMessage(conversa.id, 'assistant', reply);
+        await whatsapp.sendText(phone, reply);
+        console.log(`[ARQUIVOS] Análise enviada: ${reply.slice(0, 80)}...`);
+
+      // 4. Se extraiu texto mas NÃO tem pedido, confirmar e oferecer análise
+      } else if (textoExtraido) {
+        const resumoPreview = textoExtraido.slice(0, 200).replace(/\n/g, ' ');
+        const msg = `Salvo na gaveta, Dr. Osmar. ${resultado.nome} (${tamanhoKB} KB). Li o conteudo e posso analisar, resumir ou elaborar algo com base nele. E so pedir.`;
+        await db.saveMessage(conversa.id, 'assistant', msg);
+        await whatsapp.sendText(phone, msg);
+
+        // Guardar o texto extraído na conversa para consultas futuras
+        await db.saveMessage(conversa.id, 'system', `[Conteúdo extraído de ${fileName}]: ${textoExtraido.slice(0, 5000)}`);
+
+      // 5. Não conseguiu extrair texto (imagem, formato não suportado)
+      } else {
+        const msg = `Salvo na gaveta, Dr. Osmar. ${resultado.nome} (${resultado.tipo}, ${tamanhoKB} KB).`;
+        await db.saveMessage(conversa.id, 'assistant', msg);
+        await whatsapp.sendText(phone, msg);
+      }
     } else {
       await whatsapp.sendText(phone, 'Dr. Osmar, nao consegui salvar o arquivo. Pode tentar novamente?');
     }
   } catch (e) {
     console.error('[ARQUIVOS] Erro:', e.message);
-    await whatsapp.sendText(phone, 'Erro ao salvar o arquivo. Tente novamente.');
+    await whatsapp.sendText(phone, 'Erro ao processar o arquivo. Tente novamente.');
   }
 }
 

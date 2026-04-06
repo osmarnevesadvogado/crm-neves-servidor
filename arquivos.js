@@ -1,9 +1,15 @@
 // ===== GAVETA DE ARQUIVOS DO DR. OSMAR =====
 // Recebe arquivos (fotos, PDFs, planilhas) via WhatsApp e salva no Supabase Storage
 // Bucket: "gaveta-osmar" | Tabela de controle: "arquivos_pessoais"
+// Também extrai texto de documentos para análise pela Ana
 
 const config = require('./config');
 const { supabase } = require('./database');
+
+let pdfParse, mammoth, XLSX;
+try { pdfParse = require('pdf-parse'); } catch (e) { console.log('[ARQUIVOS] pdf-parse não disponível'); }
+try { mammoth = require('mammoth'); } catch (e) { console.log('[ARQUIVOS] mammoth não disponível'); }
+try { XLSX = require('xlsx'); } catch (e) { console.log('[ARQUIVOS] xlsx não disponível'); }
 
 const BUCKET = 'gaveta-osmar';
 
@@ -169,10 +175,76 @@ async function getDownloadUrl(path, expiresIn = 3600) {
   }
 }
 
+// ===== EXTRAIR TEXTO DE DOCUMENTO =====
+async function extrairTexto(url, contentType) {
+  try {
+    const download = await downloadFile(url);
+    if (!download) return null;
+
+    const { buffer, contentType: ct } = download;
+    const tipo = contentType || ct;
+
+    // PDF
+    if (tipo.includes('pdf') && pdfParse) {
+      const data = await pdfParse(buffer);
+      const texto = data.text?.trim();
+      if (texto) {
+        console.log(`[ARQUIVOS] PDF extraído: ${texto.length} caracteres`);
+        return texto.slice(0, 15000); // Limitar para não estourar o contexto
+      }
+    }
+
+    // DOCX
+    if ((tipo.includes('wordprocessingml') || tipo.includes('msword')) && mammoth) {
+      const result = await mammoth.extractRawText({ buffer });
+      const texto = result.value?.trim();
+      if (texto) {
+        console.log(`[ARQUIVOS] DOCX extraído: ${texto.length} caracteres`);
+        return texto.slice(0, 15000);
+      }
+    }
+
+    // Planilha (XLSX, XLS, CSV)
+    if ((tipo.includes('spreadsheet') || tipo.includes('excel') || tipo.includes('csv')) && XLSX) {
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      const linhas = [];
+      for (const sheetName of workbook.SheetNames) {
+        const sheet = workbook.Sheets[sheetName];
+        const csv = XLSX.utils.sheet_to_csv(sheet);
+        if (csv.trim()) {
+          linhas.push(`--- Aba: ${sheetName} ---`);
+          linhas.push(csv);
+        }
+      }
+      const texto = linhas.join('\n').trim();
+      if (texto) {
+        console.log(`[ARQUIVOS] Planilha extraída: ${texto.length} caracteres`);
+        return texto.slice(0, 15000);
+      }
+    }
+
+    // TXT / CSV puro
+    if (tipo.includes('text/plain') || tipo.includes('text/csv')) {
+      const texto = buffer.toString('utf-8').trim();
+      if (texto) {
+        console.log(`[ARQUIVOS] Texto extraído: ${texto.length} caracteres`);
+        return texto.slice(0, 15000);
+      }
+    }
+
+    console.log(`[ARQUIVOS] Tipo não suportado para extração: ${tipo}`);
+    return null;
+  } catch (e) {
+    console.error('[ARQUIVOS] Erro ao extrair texto:', e.message);
+    return null;
+  }
+}
+
 module.exports = {
   salvarArquivo,
   listarArquivos,
   buscarPorTipo,
   getDownloadUrl,
+  extrairTexto,
   BUCKET
 };

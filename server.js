@@ -539,10 +539,12 @@ app.post('/webhook/zapi/:urlToken?', async (req, res) => {
       return res.status(429).json({ error: 'Too many requests' });
     }
 
-    // Validar token — aceita via header, query, body ou URL
-    const received = req.params.urlToken || req.headers['x-api-key'] || req.headers['authorization'] || req.headers['client-token'] || req.query.token || req.body?.token;
-    if (!config.ZAPI_WEBHOOK_TOKEN || received !== config.ZAPI_WEBHOOK_TOKEN) {
-      console.log(`[WEBHOOK] Token rejeitado. Recebido: "${received || 'nenhum'}" | Headers: ${JSON.stringify(Object.keys(req.headers))}`);
+    // Validar token — Z-API envia via header 'z-api-token'
+    const received = req.headers['z-api-token'] || req.headers['x-api-key'] || req.headers['client-token'] || req.headers['authorization'];
+    const isValid = (config.ZAPI_WEBHOOK_TOKEN && received === config.ZAPI_WEBHOOK_TOKEN) ||
+                    (config.ZAPI_CLIENT_TOKEN && received === config.ZAPI_CLIENT_TOKEN);
+    if (!isValid) {
+      console.log(`[WEBHOOK] Token rejeitado. Recebido: "${received || 'nenhum'}"`);
       return res.status(401).json({ error: 'Unauthorized' });
     }
 

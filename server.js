@@ -528,17 +528,21 @@ setInterval(() => {
 setTimeout(() => checkFollowUps(), 60 * 1000);
 
 // ===== WEBHOOK Z-API =====
-app.post('/webhook/zapi', async (req, res) => {
+// Aceita com ou sem token na URL: /webhook/zapi ou /webhook/zapi/:token
+app.post('/webhook/zapi/:urlToken?', async (req, res) => {
   try {
+    console.log(`[WEBHOOK] Requisição recebida de ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`);
+
     // Rate limit
     const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     if (!checkRateLimit(clientIp)) {
       return res.status(429).json({ error: 'Too many requests' });
     }
 
-    // Validar token (OBRIGATÓRIO)
-    const received = req.headers['x-api-key'] || req.headers['authorization'];
+    // Validar token — aceita via header, query, body ou URL
+    const received = req.params.urlToken || req.headers['x-api-key'] || req.headers['authorization'] || req.headers['client-token'] || req.query.token || req.body?.token;
     if (!config.ZAPI_WEBHOOK_TOKEN || received !== config.ZAPI_WEBHOOK_TOKEN) {
+      console.log(`[WEBHOOK] Token rejeitado. Recebido: "${received || 'nenhum'}" | Headers: ${JSON.stringify(Object.keys(req.headers))}`);
       return res.status(401).json({ error: 'Unauthorized' });
     }
 

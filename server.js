@@ -220,7 +220,7 @@ Analise o documento e responda ao pedido do Dr. Osmar. Seja detalhado e útil.`;
         await whatsapp.sendText(phone, msg);
 
         // Guardar o texto extraído na conversa para consultas futuras
-        await db.saveMessage(conversa.id, 'system', `[Conteúdo extraído de ${fileName}]: ${textoExtraido.slice(0, 5000)}`);
+        await db.saveMessage(conversa.id, 'user', `[Documento ${fileName} - conteúdo extraído para análise]: ${textoExtraido.slice(0, 5000)}`);
 
       // 5. Não conseguiu extrair texto (imagem, formato não suportado)
       } else {

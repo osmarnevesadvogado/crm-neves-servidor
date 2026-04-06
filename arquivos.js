@@ -190,7 +190,7 @@ async function extrairTexto(url, contentType) {
       const texto = data.text?.trim();
       if (texto) {
         console.log(`[ARQUIVOS] PDF extraído: ${texto.length} caracteres`);
-        return texto.slice(0, 15000); // Limitar para não estourar o contexto
+        return texto.slice(0, 15000);
       }
     }
 

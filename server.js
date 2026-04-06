@@ -207,10 +207,19 @@ Analise o documento e responda ao pedido do Dr. Osmar. Seja detalhado e útil.`;
         const history = await db.getHistory(conversa.id);
         const rawReply = await assistentePessoal.generateResponse(history, perguntaComDocumento);
         // Não usar trimResponse para análises — precisa da resposta completa
-        const reply = rawReply.length > 1500 ? rawReply.slice(0, 1500) : rawReply;
+        // Respostas longas: dividir em mensagens de até 4000 chars (limite do WhatsApp)
+        const reply = rawReply;
         await db.saveMessage(conversa.id, 'assistant', reply);
-        await whatsapp.sendText(phone, reply);
-        console.log(`[ARQUIVOS] Análise enviada: ${reply.slice(0, 80)}...`);
+        // Dividir em mensagens de até 4000 chars para o WhatsApp
+        if (reply.length > 4000) {
+          const partes = reply.match(/[\s\S]{1,4000}/g) || [reply];
+          for (const parte of partes) {
+            await whatsapp.sendText(phone, parte);
+          }
+        } else {
+          await whatsapp.sendText(phone, reply);
+        }
+        console.log(`[ARQUIVOS] Análise enviada: ${reply.length} chars`);
 
       // 4. Se extraiu texto mas NÃO tem pedido, confirmar e oferecer análise
       } else if (textoExtraido) {
@@ -220,7 +229,7 @@ Analise o documento e responda ao pedido do Dr. Osmar. Seja detalhado e útil.`;
         await whatsapp.sendText(phone, msg);
 
         // Guardar o texto extraído na conversa para consultas futuras
-        await db.saveMessage(conversa.id, 'user', `[Documento ${fileName} - conteúdo extraído para análise]: ${textoExtraido.slice(0, 5000)}`);
+        await db.saveMessage(conversa.id, 'user', `[Documento ${fileName} - conteúdo extraído para análise]: ${textoExtraido.slice(0, 50000)}`);
 
       // 5. Não conseguiu extrair texto (imagem, formato não suportado)
       } else {

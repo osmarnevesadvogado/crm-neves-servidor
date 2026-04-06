@@ -125,7 +125,7 @@ Responda com base nos dados acima. Se a pergunta não for sobre dados do CRM, re
     try {
       const response = await anthropic.messages.create({
         model: config.CLAUDE_MODEL,
-        max_tokens: userMessage.includes('CONTEÚDO DO DOCUMENTO') ? 2000 : config.MAX_TOKENS,
+        max_tokens: userMessage.includes('CONTEÚDO DO DOCUMENTO') ? 4096 : config.MAX_TOKENS,
         system: SYSTEM_PROMPT,
         messages: cleanMessages
       });

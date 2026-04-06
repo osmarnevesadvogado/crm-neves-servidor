@@ -190,7 +190,7 @@ async function extrairTexto(url, contentType) {
       const texto = data.text?.trim();
       if (texto) {
         console.log(`[ARQUIVOS] PDF extraído: ${texto.length} caracteres`);
-        return texto.slice(0, 15000);
+        return texto.slice(0, 100000);
       }
     }
 
@@ -200,7 +200,7 @@ async function extrairTexto(url, contentType) {
       const texto = result.value?.trim();
       if (texto) {
         console.log(`[ARQUIVOS] DOCX extraído: ${texto.length} caracteres`);
-        return texto.slice(0, 15000);
+        return texto.slice(0, 100000);
       }
     }
 
@@ -219,7 +219,7 @@ async function extrairTexto(url, contentType) {
       const texto = linhas.join('\n').trim();
       if (texto) {
         console.log(`[ARQUIVOS] Planilha extraída: ${texto.length} caracteres`);
-        return texto.slice(0, 15000);
+        return texto.slice(0, 100000);
       }
     }
 
@@ -228,7 +228,7 @@ async function extrairTexto(url, contentType) {
       const texto = buffer.toString('utf-8').trim();
       if (texto) {
         console.log(`[ARQUIVOS] Texto extraído: ${texto.length} caracteres`);
-        return texto.slice(0, 15000);
+        return texto.slice(0, 100000);
       }
     }
 

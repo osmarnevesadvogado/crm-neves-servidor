@@ -127,8 +127,12 @@ function isOsmar(phone) {
   if (!config.OSMAR_PHONE) return false;
   const cleanIncoming = whatsapp.cleanPhone(phone);
   const cleanOsmar = whatsapp.cleanPhone(config.OSMAR_PHONE);
-  console.log(`[OSMAR?] Comparando: incoming="${cleanIncoming}" vs osmar="${cleanOsmar}" → ${cleanIncoming === cleanOsmar}`);
-  return whatsapp.cleanPhone(phone) === whatsapp.cleanPhone(config.OSMAR_PHONE);
+  // Comparação direta
+  if (cleanIncoming === cleanOsmar) return true;
+  // Formato brasileiro: às vezes o 9º dígito é omitido (5591XXXXXXXX vs 55919XXXXXXXX)
+  // Compara os últimos 8 dígitos do telefone (parte local sem o 9 extra)
+  if (cleanIncoming && cleanOsmar && cleanIncoming.slice(-8) === cleanOsmar.slice(-8)) return true;
+  return false;
 }
 
 // ===== PROCESSAMENTO MODO PESSOAL (DR. OSMAR) =====

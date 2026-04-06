@@ -57,6 +57,9 @@ module.exports = {
     POS_AGENDAMENTO: 'pos_agendamento'
   },
 
+  // Identificador da instância (separa dados no Supabase compartilhado)
+  INSTANCIA: 'ana',
+
   // Servidor
   PORT: process.env.PORT || 3000,
   RENDER_URL: process.env.RENDER_EXTERNAL_URL

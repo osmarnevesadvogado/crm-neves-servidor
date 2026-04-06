@@ -3,6 +3,7 @@ const { createClient } = require('@supabase/supabase-js');
 const config = require('./config');
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_KEY);
+const INST = config.INSTANCIA || 'ana';
 
 // ===== CONVERSAS =====
 
@@ -15,6 +16,7 @@ async function getOrCreateConversa(phone) {
     .select('*')
     .eq('telefone', tel)
     .eq('status', 'ativa')
+    .eq('instancia', INST)
     .order('criado_em', { ascending: false })
     .limit(1)
     .single();
@@ -23,7 +25,7 @@ async function getOrCreateConversa(phone) {
 
   const { data: newConv } = await supabase
     .from('conversas')
-    .insert({ telefone: tel, titulo: 'WhatsApp' })
+    .insert({ telefone: tel, titulo: 'WhatsApp', instancia: INST })
     .select()
     .single();
 
@@ -74,6 +76,7 @@ async function getOrCreateLead(phone, nome) {
     .from('leads')
     .select('*')
     .eq('telefone', tel)
+    .eq('instancia', INST)
     .limit(1)
     .single();
 
@@ -86,7 +89,8 @@ async function getOrCreateLead(phone, nome) {
       telefone: tel,
       origem: 'WhatsApp',
       etapa_funil: 'novo',
-      data_primeiro_contato: new Date().toISOString()
+      data_primeiro_contato: new Date().toISOString(),
+      instancia: INST
     })
     .select()
     .single();
@@ -170,6 +174,7 @@ async function getEligibleConversas() {
     .from('conversas')
     .select('id, telefone, lead_id, leads(id, nome, tese_interesse, etapa_funil, telefone)')
     .eq('status', 'ativa')
+    .eq('instancia', INST)
     .not('lead_id', 'is', null);
 
   if (!data) return [];
@@ -185,6 +190,7 @@ async function listConversas(limit = 50) {
   const { data } = await supabase
     .from('conversas')
     .select('*, leads(nome, tese_interesse, etapa_funil)')
+    .eq('instancia', INST)
     .order('criado_em', { ascending: false })
     .limit(limit);
   return data || [];
@@ -200,11 +206,11 @@ async function getConversaMensagens(conversaId) {
 }
 
 async function getMetricas() {
-  const { data: leads } = await supabase.from('leads').select('etapa_funil, criado_em');
+  const { data: leads } = await supabase.from('leads').select('etapa_funil, criado_em').eq('instancia', INST);
   const etapas = { novo: 0, contato: 0, proposta: 0, convertido: 0, perdido: 0 };
   (leads || []).forEach(l => { if (etapas[l.etapa_funil] !== undefined) etapas[l.etapa_funil]++; });
 
-  const { data: conversas } = await supabase.from('conversas').select('id, criado_em').eq('status', 'ativa');
+  const { data: conversas } = await supabase.from('conversas').select('id, criado_em').eq('status', 'ativa').eq('instancia', INST);
 
   let eventos = [];
   try {
@@ -338,6 +344,7 @@ async function getRelatorioSemanal() {
   const { data: leadsNovos } = await supabase
     .from('leads')
     .select('id, nome, tese_interesse, etapa_funil')
+    .eq('instancia', INST)
     .gte('criado_em', semanaAtrasISO);
 
   // Leads convertidos na semana
@@ -369,6 +376,7 @@ async function getRelatorioSemanal() {
   const { data: leadsAtivos } = await supabase
     .from('leads')
     .select('id')
+    .eq('instancia', INST)
     .not('etapa_funil', 'in', '("convertido","perdido")');
 
   // Financeiro recebido na semana

@@ -122,6 +122,18 @@ function checkRateLimit(ip) {
 }
 setInterval(() => { rateLimitMap.clear(); }, 5 * 60 * 1000);
 
+// ===== ENVIAR MENSAGEM LONGA (divide em blocos de 4000 chars) =====
+async function sendLongText(phone, text) {
+  if (text.length <= 4000) {
+    await whatsapp.sendText(phone, text);
+  } else {
+    const partes = text.match(/[\s\S]{1,4000}/g) || [text];
+    for (const parte of partes) {
+      await whatsapp.sendText(phone, parte.trim());
+    }
+  }
+}
+
 // ===== VERIFICAR SE É O DR. OSMAR =====
 function isOsmar(phone) {
   if (!config.OSMAR_PHONE) return false;
@@ -134,6 +146,75 @@ function isOsmar(phone) {
   if (cleanIncoming && cleanOsmar && cleanIncoming.slice(-8) === cleanOsmar.slice(-8)) return true;
   return false;
 }
+
+// ===== LEMBRETES =====
+
+// Parser: detecta [LEMBRETE: descricao="..." horario="HH:MM" recorrencia="..."] na resposta da Ana
+async function processarLembretes(resposta, telefone) {
+  const regex = /\[LEMBRETE:\s*descricao="([^"]+)"\s*horario="([^"]+)"\s*recorrencia="([^"]+)"\]/gi;
+  let match;
+
+  while ((match = regex.exec(resposta)) !== null) {
+    const descricao = match[1];
+    const horarioStr = match[2]; // "HH:MM"
+    const recorrencia = match[3]; // "diario", "semanal", "unico"
+
+    // Converter "HH:MM" para datetime de hoje (horário de Belém)
+    const [horas, minutos] = horarioStr.split(':').map(Number);
+    const agora = new Date();
+    // Criar data em UTC ajustando para Belém (UTC-3)
+    const horario = new Date(agora);
+    horario.setUTCHours(horas + 3, minutos, 0, 0); // Belém = UTC-3
+
+    // Se o horário já passou hoje, agendar para amanhã
+    if (horario <= agora) {
+      horario.setDate(horario.getDate() + 1);
+    }
+
+    const lembrete = await db.criarLembrete({
+      descricao,
+      horario: horario.toISOString(),
+      recorrencia: recorrencia === 'unico' ? null : recorrencia,
+      telefone: whatsapp.cleanPhone(telefone)
+    });
+
+    if (lembrete) {
+      console.log(`[LEMBRETE] Criado: "${descricao}" às ${horarioStr} (${recorrencia})`);
+    }
+  }
+}
+
+// Agendador: verifica lembretes a cada minuto e envia no horário certo
+async function checkLembretes() {
+  try {
+    const lembretes = await db.getLembretesAtivos();
+    if (lembretes.length === 0) return;
+
+    const agora = new Date();
+
+    for (const lembrete of lembretes) {
+      const horarioLembrete = new Date(lembrete.horario);
+
+      // Verificar se está na janela de envio (até 2 minutos de atraso tolerado)
+      const diffMs = agora - horarioLembrete;
+      if (diffMs >= 0 && diffMs < 2 * 60 * 1000) {
+        const telefone = lembrete.telefone || config.OSMAR_PHONE;
+        const msg = `Dr. Osmar, seu lembrete: ${lembrete.descricao}`;
+
+        await whatsapp.sendText(telefone, msg);
+        await db.marcarLembreteEnviado(lembrete.id, lembrete.recorrencia);
+        console.log(`[LEMBRETE] Enviado: "${lembrete.descricao}" para ${telefone}`);
+      }
+    }
+  } catch (e) {
+    console.error('[LEMBRETE] Erro no agendador:', e.message);
+  }
+}
+
+// Verificar lembretes a cada 1 minuto
+setInterval(() => checkLembretes(), 60 * 1000);
+// Verificar na inicialização (após 30 segundos)
+setTimeout(() => checkLembretes(), 30 * 1000);
 
 // ===== PROCESSAMENTO MODO PESSOAL (DR. OSMAR) =====
 async function processOsmarMessage(phone, text, respondComAudio = false) {
@@ -150,18 +231,29 @@ async function processOsmarMessage(phone, text, respondComAudio = false) {
 
     const history = await db.getHistory(conversa.id);
     const rawReply = await assistentePessoal.generateResponse(history, text);
-    const reply = ia.trimResponse(rawReply);
+
+    // Detectar e criar lembretes na resposta da Ana
+    await processarLembretes(rawReply, phone);
+
+    // Limpar o comando de lembrete da mensagem antes de enviar
+    const reply = rawReply.replace(/\[LEMBRETE:.*?\]/g, '').trim();
     await db.saveMessage(conversa.id, 'assistant', reply);
 
+    // Enviar resposta (dividir se for longa)
     if (respondComAudio && audio) {
-      const audioBase64 = await audio.gerarAudio(reply);
+      const audioReply = reply.length > 500 ? reply.slice(0, 500) : reply;
+      const audioBase64 = await audio.gerarAudio(audioReply);
       if (audioBase64) {
         await whatsapp.sendAudio(phone, audioBase64);
+        // Se cortou para áudio, enviar o restante por texto
+        if (reply.length > 500) {
+          await whatsapp.sendText(phone, reply);
+        }
       } else {
-        await whatsapp.sendText(phone, reply);
+        await sendLongText(phone, reply);
       }
     } else {
-      await whatsapp.sendText(phone, reply);
+      await sendLongText(phone, reply);
     }
 
     console.log(`[PESSOAL] Resposta: ${reply.slice(0, 80)}...`);
@@ -183,8 +275,8 @@ async function processOsmarFile(phone, fileUrl, fileName, caption) {
     // 1. Salvar na gaveta
     const resultado = await arquivos.salvarArquivo(fileUrl, fileName, caption);
 
-    // 2. Extrair texto do documento
-    const textoExtraido = await arquivos.extrairTexto(fileUrl);
+    // 2. Extrair texto do documento (reutiliza buffer do download, evita baixar 2x)
+    const textoExtraido = resultado ? await arquivos.extrairTexto(resultado.buffer, resultado.contentType) : null;
 
     const conversa = await db.getOrCreateConversa(phone);
 
@@ -210,15 +302,7 @@ Analise o documento e responda ao pedido do Dr. Osmar. Seja detalhado e útil.`;
         // Respostas longas: dividir em mensagens de até 4000 chars (limite do WhatsApp)
         const reply = rawReply;
         await db.saveMessage(conversa.id, 'assistant', reply);
-        // Dividir em mensagens de até 4000 chars para o WhatsApp
-        if (reply.length > 4000) {
-          const partes = reply.match(/[\s\S]{1,4000}/g) || [reply];
-          for (const parte of partes) {
-            await whatsapp.sendText(phone, parte);
-          }
-        } else {
-          await whatsapp.sendText(phone, reply);
-        }
+        await sendLongText(phone, reply);
         console.log(`[ARQUIVOS] Análise enviada: ${reply.length} chars`);
 
       // 4. Se extraiu texto mas NÃO tem pedido, confirmar e oferecer análise
@@ -472,6 +556,9 @@ async function checkFollowUps() {
     const now = Date.now();
 
     for (const conv of eligible) {
+      // NUNCA fazer follow-up para o número do Dr. Osmar
+      if (isOsmar(conv.telefone)) continue;
+
       const lastMsgs = msgsByConv[conv.id];
       if (!lastMsgs || lastMsgs.length === 0) continue;
 
@@ -583,8 +670,7 @@ setInterval(() => {
 setTimeout(() => checkFollowUps(), 60 * 1000);
 
 // ===== WEBHOOK Z-API =====
-// Aceita com ou sem token na URL: /webhook/zapi ou /webhook/zapi/:token
-app.post('/webhook/zapi/:urlToken?', async (req, res) => {
+app.post('/webhook/zapi', async (req, res) => {
   try {
     console.log(`[WEBHOOK] Requisição recebida de ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`);
 

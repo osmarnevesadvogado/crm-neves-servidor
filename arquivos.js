@@ -115,7 +115,9 @@ async function salvarArquivo(url, nomeOriginal, descricao) {
       path,
       nome: nomeOriginal || 'arquivo',
       tipo: tipoInfo.tipo,
-      tamanho: buffer.length
+      tamanho: buffer.length,
+      buffer,
+      contentType
     };
   } catch (e) {
     console.error('[ARQUIVOS] Erro ao salvar:', e.message);
@@ -176,13 +178,20 @@ async function getDownloadUrl(path, expiresIn = 3600) {
 }
 
 // ===== EXTRAIR TEXTO DE DOCUMENTO =====
-async function extrairTexto(url, contentType) {
+// Aceita buffer direto (evita download duplicado) ou URL
+async function extrairTexto(urlOrBuffer, contentType) {
   try {
-    const download = await downloadFile(url);
-    if (!download) return null;
+    let buffer, tipo;
 
-    const { buffer, contentType: ct } = download;
-    const tipo = contentType || ct;
+    if (Buffer.isBuffer(urlOrBuffer)) {
+      buffer = urlOrBuffer;
+      tipo = contentType || 'application/octet-stream';
+    } else {
+      const download = await downloadFile(urlOrBuffer);
+      if (!download) return null;
+      buffer = download.buffer;
+      tipo = contentType || download.contentType;
+    }
 
     // PDF
     if (tipo.includes('pdf') && pdfParse) {

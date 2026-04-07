@@ -26,8 +26,27 @@ O QUE VOCÊ PODE FAZER:
 5. LEADS — Novos leads, leads quentes, taxa de conversão
 6. RELATÓRIOS — Resumo semanal, métricas do escritório
 7. ARQUIVOS — Listar e buscar arquivos salvos na gaveta pessoal
-8. ORGANIZAÇÃO — Criar tarefas, lembretes, anotações
-9. GERAL — Tirar dúvidas, brainstorming, ideias, qualquer assunto
+8. LEMBRETES — Criar lembretes que disparam no horário certo via WhatsApp
+9. ORGANIZAÇÃO — Criar tarefas, anotações
+10. GERAL — Tirar dúvidas, brainstorming, ideias, qualquer assunto
+
+LEMBRETES — COMO FUNCIONA:
+Quando o Dr. Osmar pedir um lembrete, responda com o comando especial entre colchetes:
+[LEMBRETE: descricao="texto do lembrete" horario="HH:MM" recorrencia="diario|semanal|unico"]
+
+Exemplos:
+- "Me lembra de tomar remédio às 8h" → Responda normalmente E inclua: [LEMBRETE: descricao="Tomar remédio" horario="08:00" recorrencia="diario"]
+- "Me avisa sexta às 14h da reunião" → [LEMBRETE: descricao="Reunião" horario="14:00" recorrencia="unico"]
+- "Lembrete todo dia às 7h pra fazer exercício" → [LEMBRETE: descricao="Fazer exercício" horario="07:00" recorrencia="diario"]
+- "Me lembra toda segunda de revisar os casos" → [LEMBRETE: descricao="Revisar casos" horario="09:00" recorrencia="semanal"]
+
+REGRAS DOS LEMBRETES:
+- SEMPRE inclua o comando [LEMBRETE: ...] quando o Dr. Osmar pedir lembrete/alarme/aviso
+- Se ele não especificar o horário, pergunte
+- Se não disser se é recorrente, assuma "unico"
+- Se disser "todo dia" ou "diariamente", use recorrencia="diario"
+- Se disser "toda semana" ou "toda segunda/terça/etc", use recorrencia="semanal"
+- A seção LEMBRETES ATIVOS na ficha mostra os lembretes já configurados
 
 COMO RESPONDER:
 - Se ele pedir dados do CRM, consulte a FICHA DE DADOS abaixo
@@ -74,12 +93,39 @@ async function buildFichaDados() {
   }
 
   try {
+    // Agenda do dia e da semana
+    const calendar = require('./calendar');
+    const { slots } = await calendar.sugerirHorarios(5);
+    if (slots && slots.length > 0) {
+      linhas.push('\nAGENDA — PRÓXIMOS HORÁRIOS LIVRES:');
+      slots.forEach(s => linhas.push(`- ${s.label}`));
+    }
+  } catch (e) {
+    // Calendar pode não estar disponível
+  }
+
+  try {
     // Arquivos recentes
     const arquivos = await db.listarArquivos(5);
     if (arquivos && arquivos.length > 0) {
       linhas.push('\nÚLTIMOS ARQUIVOS SALVOS:');
       arquivos.forEach(a => {
         linhas.push(`- ${a.nome_original} (${a.tipo}) — ${new Date(a.criado_em).toLocaleDateString('pt-BR')}`);
+      });
+    }
+  } catch (e) {
+    // Tabela pode não existir ainda
+  }
+
+  try {
+    // Lembretes ativos
+    const lembretes = await db.listarLembretesDoUsuario(config.OSMAR_PHONE);
+    if (lembretes && lembretes.length > 0) {
+      linhas.push('\nLEMBRETES ATIVOS:');
+      lembretes.forEach(l => {
+        const hora = new Date(l.horario).toLocaleTimeString('pt-BR', { timeZone: 'America/Belem', hour: '2-digit', minute: '2-digit' });
+        const tipo = l.recorrencia === 'diario' ? '(diário)' : l.recorrencia === 'semanal' ? '(semanal)' : '(único)';
+        linhas.push(`- ${l.descricao} às ${hora} ${tipo}`);
       });
     }
   } catch (e) {
@@ -125,7 +171,7 @@ Responda com base nos dados acima. Se a pergunta não for sobre dados do CRM, re
     try {
       const response = await anthropic.messages.create({
         model: config.CLAUDE_MODEL,
-        max_tokens: userMessage.includes('CONTEÚDO DO DOCUMENTO') ? 4096 : config.MAX_TOKENS,
+        max_tokens: userMessage.includes('CONTEÚDO DO DOCUMENTO') ? 4096 : 1024,
         system: SYSTEM_PROMPT,
         messages: cleanMessages
       });

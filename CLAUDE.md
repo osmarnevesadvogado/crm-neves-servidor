@@ -34,7 +34,11 @@ A Ana roda no WhatsApp Business via Z-API e usa Claude Sonnet 4.6 como IA.
 - Ana vira assistente pessoal com acesso ao CRM (finanças, agenda, casos, leads)
 - Recebe e salva arquivos na gaveta (bucket `gaveta-osmar` no Supabase Storage)
 - Lê e analisa documentos (PDF, DOCX, XLSX, CSV, TXT) — até 100K caracteres (~200 pgs)
-- Max tokens para análises: 4096
+- Max tokens: 1024 (modo pessoal) / 4096 (análise de documentos)
+- **NÃO usa trimResponse** — respostas completas, divididas em blocos de 4000 chars
+- Ficha de dados inclui: métricas, relatório semanal, agenda, arquivos recentes, lembretes ativos
+- Sistema de lembretes: únicos, diários e semanais (agendador a cada 1 minuto)
+- Follow-ups NUNCA são enviados para o número do Dr. Osmar
 
 ## Detecção do número do Dr. Osmar
 
@@ -88,6 +92,7 @@ GOOGLE_CALENDAR_ID   - ID do calendário do Dr. Osmar
 - `casos` — processos jurídicos
 - `financeiro` — pagamentos e cobranças
 - `arquivos_pessoais` — registro de arquivos na gaveta
+- `lembretes` — lembretes agendados (únicos, diários, semanais) com coluna `instancia`
 
 ## Storage Supabase
 
@@ -106,6 +111,11 @@ GOOGLE_CALENDAR_ID   - ID do calendário do Dr. Osmar
 7. PDF usa `pdf-parse@1.1.1` (v1) — a v2 tem API incompatível
 8. Mensagens longas no WhatsApp devem ser divididas em blocos de 4000 chars
 9. Branch padrão para desenvolvimento: `claude/nome-da-feature`
+10. **Modo pessoal NÃO usa trimResponse** — usar `sendLongText()` para dividir respostas
+11. **Follow-ups nunca para o Dr. Osmar** — `isOsmar()` bloqueia no loop de follow-ups
+12. **Lembretes com dedup** — mesmo texto + horário (±5min) não cria duplicata
+13. **Arquivos: buffer reutilizado** — `salvarArquivo` retorna buffer, `extrairTexto` reutiliza (não baixar 2x)
+14. Assistente pessoal usa **comando [LEMBRETE: ...]** na resposta — parser no server.js detecta e cria
 
 ## Z-API
 

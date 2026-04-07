@@ -212,9 +212,14 @@ async function checkLembretes() {
 }
 
 // Verificar lembretes a cada 1 minuto
-setInterval(() => checkLembretes(), 60 * 1000);
+setInterval(() => {
+  checkLembretes().catch(e => console.error('[LEMBRETE] Erro:', e.message));
+}, 60 * 1000);
 // Verificar na inicialização (após 30 segundos)
-setTimeout(() => checkLembretes(), 30 * 1000);
+setTimeout(() => {
+  console.log('[LEMBRETE] Agendador de lembretes iniciado (a cada 1 min)');
+  checkLembretes().catch(e => console.error('[LEMBRETE] Erro:', e.message));
+}, 30 * 1000);
 
 // ===== PROCESSAMENTO MODO PESSOAL (DR. OSMAR) =====
 async function processOsmarMessage(phone, text, respondComAudio = false) {
@@ -233,7 +238,10 @@ async function processOsmarMessage(phone, text, respondComAudio = false) {
     const rawReply = await assistentePessoal.generateResponse(history, text);
 
     // Detectar e criar lembretes na resposta da Ana
-    await processarLembretes(rawReply, phone);
+    const temLembrete = /\[LEMBRETE:/i.test(rawReply);
+    if (temLembrete) {
+      await processarLembretes(rawReply, phone);
+    }
 
     // Limpar o comando de lembrete da mensagem antes de enviar
     const reply = rawReply.replace(/\[LEMBRETE:.*?\]/g, '').trim();
@@ -695,13 +703,14 @@ app.post('/webhook/zapi', async (req, res) => {
     const isMessage = body.type === 'ReceivedCallback' || body.text?.message;
     const isFromMe = body.fromMe || body.isFromMe;
 
-    // Mensagem enviada: detectar se foi IA ou Dr. Osmar
+    // Mensagem enviada: detectar se foi IA ou Dr. Osmar respondendo manualmente
     if (isFromMe) {
       const phone = body.phone || body.to?.replace('@c.us', '') || '';
       if (phone && whatsapp.wasBotRecentSend(phone)) {
         return res.json({ status: 'bot_sent' });
       }
-      if (phone) {
+      // Não pausar se a mensagem foi enviada PARA o Dr. Osmar (modo pessoal)
+      if (phone && !isOsmar(phone)) {
         pauseAI(phone, 30);
         console.log(`[MANUAL] Dr. Osmar respondeu para ${phone} - IA pausada 30min`);
       }

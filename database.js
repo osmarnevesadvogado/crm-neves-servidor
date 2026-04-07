@@ -419,6 +419,25 @@ async function listarArquivos(limit = 10) {
 
 async function criarLembrete({ descricao, horario, recorrencia, telefone }) {
   try {
+    // Verificar duplicata: mesmo texto + mesmo horário (tolerância de 5 min)
+    const horarioDate = new Date(horario);
+    const min5antes = new Date(horarioDate.getTime() - 5 * 60 * 1000).toISOString();
+    const min5depois = new Date(horarioDate.getTime() + 5 * 60 * 1000).toISOString();
+    const { data: existente } = await supabase
+      .from('lembretes')
+      .select('id')
+      .eq('descricao', descricao)
+      .eq('ativo', true)
+      .eq('instancia', INST)
+      .gte('horario', min5antes)
+      .lte('horario', min5depois)
+      .limit(1)
+      .single();
+    if (existente) {
+      console.log(`[LEMBRETE] Duplicata ignorada: "${descricao}"`);
+      return existente;
+    }
+
     const { data, error } = await supabase
       .from('lembretes')
       .insert({

@@ -93,6 +93,18 @@ async function buildFichaDados() {
   }
 
   try {
+    // Agenda do dia e da semana
+    const calendar = require('./calendar');
+    const { slots } = await calendar.sugerirHorarios(5);
+    if (slots && slots.length > 0) {
+      linhas.push('\nAGENDA — PRÓXIMOS HORÁRIOS LIVRES:');
+      slots.forEach(s => linhas.push(`- ${s.label}`));
+    }
+  } catch (e) {
+    // Calendar pode não estar disponível
+  }
+
+  try {
     // Arquivos recentes
     const arquivos = await db.listarArquivos(5);
     if (arquivos && arquivos.length > 0) {
@@ -159,7 +171,7 @@ Responda com base nos dados acima. Se a pergunta não for sobre dados do CRM, re
     try {
       const response = await anthropic.messages.create({
         model: config.CLAUDE_MODEL,
-        max_tokens: userMessage.includes('CONTEÚDO DO DOCUMENTO') ? 4096 : config.MAX_TOKENS,
+        max_tokens: userMessage.includes('CONTEÚDO DO DOCUMENTO') ? 4096 : 1024,
         system: SYSTEM_PROMPT,
         messages: cleanMessages
       });

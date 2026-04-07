@@ -135,6 +135,75 @@ function isOsmar(phone) {
   return false;
 }
 
+// ===== LEMBRETES =====
+
+// Parser: detecta [LEMBRETE: descricao="..." horario="HH:MM" recorrencia="..."] na resposta da Ana
+async function processarLembretes(resposta, telefone) {
+  const regex = /\[LEMBRETE:\s*descricao="([^"]+)"\s*horario="([^"]+)"\s*recorrencia="([^"]+)"\]/gi;
+  let match;
+
+  while ((match = regex.exec(resposta)) !== null) {
+    const descricao = match[1];
+    const horarioStr = match[2]; // "HH:MM"
+    const recorrencia = match[3]; // "diario", "semanal", "unico"
+
+    // Converter "HH:MM" para datetime de hoje (horário de Belém)
+    const [horas, minutos] = horarioStr.split(':').map(Number);
+    const agora = new Date();
+    // Criar data em UTC ajustando para Belém (UTC-3)
+    const horario = new Date(agora);
+    horario.setUTCHours(horas + 3, minutos, 0, 0); // Belém = UTC-3
+
+    // Se o horário já passou hoje, agendar para amanhã
+    if (horario <= agora) {
+      horario.setDate(horario.getDate() + 1);
+    }
+
+    const lembrete = await db.criarLembrete({
+      descricao,
+      horario: horario.toISOString(),
+      recorrencia: recorrencia === 'unico' ? null : recorrencia,
+      telefone: whatsapp.cleanPhone(telefone)
+    });
+
+    if (lembrete) {
+      console.log(`[LEMBRETE] Criado: "${descricao}" às ${horarioStr} (${recorrencia})`);
+    }
+  }
+}
+
+// Agendador: verifica lembretes a cada minuto e envia no horário certo
+async function checkLembretes() {
+  try {
+    const lembretes = await db.getLembretesAtivos();
+    if (lembretes.length === 0) return;
+
+    const agora = new Date();
+
+    for (const lembrete of lembretes) {
+      const horarioLembrete = new Date(lembrete.horario);
+
+      // Verificar se está na janela de envio (até 2 minutos de atraso tolerado)
+      const diffMs = agora - horarioLembrete;
+      if (diffMs >= 0 && diffMs < 2 * 60 * 1000) {
+        const telefone = lembrete.telefone || config.OSMAR_PHONE;
+        const msg = `Dr. Osmar, seu lembrete: ${lembrete.descricao}`;
+
+        await whatsapp.sendText(telefone, msg);
+        await db.marcarLembreteEnviado(lembrete.id, lembrete.recorrencia);
+        console.log(`[LEMBRETE] Enviado: "${lembrete.descricao}" para ${telefone}`);
+      }
+    }
+  } catch (e) {
+    console.error('[LEMBRETE] Erro no agendador:', e.message);
+  }
+}
+
+// Verificar lembretes a cada 1 minuto
+setInterval(() => checkLembretes(), 60 * 1000);
+// Verificar na inicialização (após 30 segundos)
+setTimeout(() => checkLembretes(), 30 * 1000);
+
 // ===== PROCESSAMENTO MODO PESSOAL (DR. OSMAR) =====
 async function processOsmarMessage(phone, text, respondComAudio = false) {
   try {
@@ -150,7 +219,13 @@ async function processOsmarMessage(phone, text, respondComAudio = false) {
 
     const history = await db.getHistory(conversa.id);
     const rawReply = await assistentePessoal.generateResponse(history, text);
-    const reply = ia.trimResponse(rawReply);
+
+    // Detectar e criar lembretes na resposta da Ana
+    await processarLembretes(rawReply, phone);
+
+    // Limpar o comando de lembrete da mensagem antes de enviar
+    const replyLimpa = rawReply.replace(/\[LEMBRETE:.*?\]/g, '').trim();
+    const reply = ia.trimResponse(replyLimpa);
     await db.saveMessage(conversa.id, 'assistant', reply);
 
     if (respondComAudio && audio) {

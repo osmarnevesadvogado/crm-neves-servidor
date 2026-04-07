@@ -415,6 +415,99 @@ async function listarArquivos(limit = 10) {
   }
 }
 
+// ===== LEMBRETES =====
+
+async function criarLembrete({ descricao, horario, recorrencia, telefone }) {
+  try {
+    const { data, error } = await supabase
+      .from('lembretes')
+      .insert({
+        descricao,
+        horario,
+        recorrencia: recorrencia || null,
+        telefone,
+        ativo: true,
+        instancia: INST
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[LEMBRETE] Erro ao criar:', error.message);
+      return null;
+    }
+    console.log(`[LEMBRETE] Criado: "${descricao}" às ${horario}`);
+    return data;
+  } catch (e) {
+    console.error('[LEMBRETE] Erro:', e.message);
+    return null;
+  }
+}
+
+async function getLembretesAtivos() {
+  try {
+    const { data } = await supabase
+      .from('lembretes')
+      .select('*')
+      .eq('ativo', true)
+      .eq('instancia', INST);
+    return data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function marcarLembreteEnviado(lembreteId, recorrencia) {
+  try {
+    if (recorrencia === 'diario') {
+      // Lembrete diário: atualizar horário para amanhã
+      const { data: lembrete } = await supabase.from('lembretes').select('horario').eq('id', lembreteId).single();
+      if (lembrete) {
+        const proximoHorario = new Date(lembrete.horario);
+        proximoHorario.setDate(proximoHorario.getDate() + 1);
+        await supabase.from('lembretes').update({ horario: proximoHorario.toISOString(), ultimo_envio: new Date().toISOString() }).eq('id', lembreteId);
+      }
+    } else if (recorrencia === 'semanal') {
+      const { data: lembrete } = await supabase.from('lembretes').select('horario').eq('id', lembreteId).single();
+      if (lembrete) {
+        const proximoHorario = new Date(lembrete.horario);
+        proximoHorario.setDate(proximoHorario.getDate() + 7);
+        await supabase.from('lembretes').update({ horario: proximoHorario.toISOString(), ultimo_envio: new Date().toISOString() }).eq('id', lembreteId);
+      }
+    } else {
+      // Lembrete único: desativar
+      await supabase.from('lembretes').update({ ativo: false, ultimo_envio: new Date().toISOString() }).eq('id', lembreteId);
+    }
+  } catch (e) {
+    console.error('[LEMBRETE] Erro ao atualizar:', e.message);
+  }
+}
+
+async function listarLembretesDoUsuario(telefone) {
+  try {
+    const { cleanPhone } = require('./whatsapp');
+    const tel = cleanPhone(telefone);
+    const { data } = await supabase
+      .from('lembretes')
+      .select('*')
+      .eq('ativo', true)
+      .eq('instancia', INST)
+      .order('horario', { ascending: true });
+    return data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function cancelarLembrete(lembreteId) {
+  try {
+    await supabase.from('lembretes').update({ ativo: false }).eq('id', lembreteId);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 module.exports = {
   supabase,
   getOrCreateConversa,
@@ -436,5 +529,10 @@ module.exports = {
   findCasoByCliente,
   getContextoCompleto,
   getRelatorioSemanal,
-  listarArquivos
+  listarArquivos,
+  criarLembrete,
+  getLembretesAtivos,
+  marcarLembreteEnviado,
+  listarLembretesDoUsuario,
+  cancelarLembrete
 };

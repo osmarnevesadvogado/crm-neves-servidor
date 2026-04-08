@@ -147,20 +147,25 @@ function isOsmar(phone) {
   return false;
 }
 
-// ===== LEMBRETES =====
+// ===== LEMBRETES E MEMÓRIAS =====
 
-// Parser: detecta [LEMBRETE: descricao="..." horario="HH:MM" recorrencia="..."] na resposta da Ana
+// Parser de lembretes — mais tolerante com variações do Claude
 async function processarLembretes(resposta, telefone) {
-  const regex = /\[LEMBRETE:\s*descricao="([^"]+)"\s*horario="([^"]+)"\s*recorrencia="([^"]+)"\]/gi;
+  // Aceita variações: aspas simples/duplas, espaços extras, ordem diferente
+  const regex = /\[LEMBRETE:\s*descricao=["']([^"']+)["']\s*horario=["']([^"']+)["']\s*recorrencia=["']([^"']+)["']\s*\]/gi;
   let match;
+  let encontrou = false;
 
   while ((match = regex.exec(resposta)) !== null) {
-    const descricao = match[1];
-    const horarioStr = match[2]; // "HH:MM"
-    const recorrencia = match[3]; // "diario", "semanal", "unico"
+    encontrou = true;
+    const descricao = match[1].trim();
+    const horarioStr = match[2].trim(); // "HH:MM"
+    const recorrencia = match[3].trim(); // "diario", "semanal", "unico"
 
     // Converter "HH:MM" para datetime de hoje (horário de Belém)
-    const [horas, minutos] = horarioStr.split(':').map(Number);
+    const partes = horarioStr.split(':').map(Number);
+    const horas = partes[0] || 0;
+    const minutos = partes[1] || 0;
     const agora = new Date();
     // Criar data em UTC ajustando para Belém (UTC-3)
     const horario = new Date(agora);
@@ -181,6 +186,25 @@ async function processarLembretes(resposta, telefone) {
     if (lembrete) {
       console.log(`[LEMBRETE] Criado: "${descricao}" às ${horarioStr} (${recorrencia})`);
     }
+  }
+
+  if (!encontrou) {
+    console.log(`[LEMBRETE] Nenhum comando encontrado na resposta`);
+  }
+}
+
+// Parser de memórias — salva informações pessoais no Supabase
+async function processarMemorias(resposta) {
+  const regex = /\[MEMORIA:\s*chave=["']([^"']+)["']\s*valor=["']([^"']+)["']\s*categoria=["']([^"']+)["']\s*\]/gi;
+  let match;
+
+  while ((match = regex.exec(resposta)) !== null) {
+    const chave = match[1].trim();
+    const valor = match[2].trim();
+    const categoria = match[3].trim();
+
+    await db.salvarMemoria(chave, valor, categoria);
+    console.log(`[MEMORIA] Salvo: ${chave} = "${valor}" (${categoria})`);
   }
 }
 
@@ -238,13 +262,20 @@ async function processOsmarMessage(phone, text, respondComAudio = false) {
     const rawReply = await assistentePessoal.generateResponse(history, text);
 
     // Detectar e criar lembretes na resposta da Ana
-    const temLembrete = /\[LEMBRETE:/i.test(rawReply);
-    if (temLembrete) {
+    if (/\[LEMBRETE:/i.test(rawReply)) {
       await processarLembretes(rawReply, phone);
     }
 
-    // Limpar o comando de lembrete da mensagem antes de enviar
-    const reply = rawReply.replace(/\[LEMBRETE:.*?\]/g, '').trim();
+    // Detectar e salvar memórias na resposta da Ana
+    if (/\[MEMORIA:/i.test(rawReply)) {
+      await processarMemorias(rawReply);
+    }
+
+    // Limpar os comandos da mensagem antes de enviar ao WhatsApp
+    const reply = rawReply
+      .replace(/\[LEMBRETE:[^\]]*\]/gi, '')
+      .replace(/\[MEMORIA:[^\]]*\]/gi, '')
+      .trim();
     await db.saveMessage(conversa.id, 'assistant', reply);
 
     // Enviar resposta (dividir se for longa)

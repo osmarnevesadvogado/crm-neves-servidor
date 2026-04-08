@@ -91,6 +91,7 @@ GOOGLE_CALENDAR_ID   - ID do calendário do Dr. Osmar
 - `clientes` — clientes existentes
 - `casos` — processos jurídicos
 - `financeiro` — pagamentos e cobranças
+- `memoria_ana` — memória persistente da Ana (chave, valor, categoria, instancia)
 - `arquivos_pessoais` — registro de arquivos na gaveta
 - `lembretes` — lembretes agendados (únicos, diários, semanais) com coluna `instancia`
 

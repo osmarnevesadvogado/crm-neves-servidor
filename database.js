@@ -527,6 +527,64 @@ async function cancelarLembrete(lembreteId) {
   }
 }
 
+// ===== MEMÓRIA PERSISTENTE DA ANA =====
+// A Ana acumula conhecimento sobre o Dr. Osmar e o escritório
+
+async function salvarMemoria(chave, valor, categoria) {
+  try {
+    // Upsert: atualiza se a chave já existe
+    const { data: existente } = await supabase
+      .from('memoria_ana')
+      .select('id')
+      .eq('chave', chave)
+      .eq('instancia', INST)
+      .limit(1)
+      .single();
+
+    if (existente) {
+      await supabase.from('memoria_ana').update({
+        valor,
+        categoria: categoria || 'geral',
+        atualizado_em: new Date().toISOString()
+      }).eq('id', existente.id);
+    } else {
+      await supabase.from('memoria_ana').insert({
+        chave,
+        valor,
+        categoria: categoria || 'geral',
+        instancia: INST
+      });
+    }
+    console.log(`[MEMORIA] Salvo: ${chave}`);
+  } catch (e) {
+    // Tabela pode não existir ainda — não quebrar o fluxo
+  }
+}
+
+async function buscarMemorias(categoria) {
+  try {
+    let query = supabase.from('memoria_ana').select('*').eq('instancia', INST);
+    if (categoria) query = query.eq('categoria', categoria);
+    const { data } = await query.order('atualizado_em', { ascending: false }).limit(50);
+    return data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function buscarTodasMemorias() {
+  try {
+    const { data } = await supabase
+      .from('memoria_ana')
+      .select('*')
+      .eq('instancia', INST)
+      .order('categoria', { ascending: true });
+    return data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
 module.exports = {
   supabase,
   getOrCreateConversa,
@@ -553,5 +611,8 @@ module.exports = {
   getLembretesAtivos,
   marcarLembreteEnviado,
   listarLembretesDoUsuario,
-  cancelarLembrete
+  cancelarLembrete,
+  salvarMemoria,
+  buscarMemorias,
+  buscarTodasMemorias
 };

@@ -38,7 +38,10 @@ A Ana roda no WhatsApp Business via Z-API e usa Claude Sonnet 4.6 como IA.
 - **NÃO usa trimResponse** — respostas completas, divididas em blocos de 4000 chars
 - Ficha de dados inclui: métricas, relatório semanal, agenda, arquivos recentes, lembretes ativos
 - Sistema de lembretes: únicos, diários e semanais (agendador a cada 1 minuto)
+- **Memória persistente** — Ana acumula conhecimento (saúde, rotina, trabalho, etc.) na tabela `memoria_ana`
+- Comandos especiais na resposta: `[LEMBRETE: ...]` e `[MEMORIA: ...]` — parsers no server.js detectam e salvam
 - Follow-ups NUNCA são enviados para o número do Dr. Osmar
+- **isFromMe NÃO pausa** quando destinatário é o Dr. Osmar (modo pessoal não é pausado)
 
 ## Detecção do número do Dr. Osmar
 
@@ -117,6 +120,10 @@ GOOGLE_CALENDAR_ID   - ID do calendário do Dr. Osmar
 12. **Lembretes com dedup** — mesmo texto + horário (±5min) não cria duplicata
 13. **Arquivos: buffer reutilizado** — `salvarArquivo` retorna buffer, `extrairTexto` reutiliza (não baixar 2x)
 14. Assistente pessoal usa **comando [LEMBRETE: ...]** na resposta — parser no server.js detecta e cria
+15. Assistente pessoal usa **comando [MEMORIA: ...]** para salvar informações persistentes
+16. **Parser tolerante** — aceita aspas simples/duplas, espaços extras nos comandos
+17. **isFromMe** não pausa quando destinatário é o Dr. Osmar — evita pausar modo pessoal
+18. **Memória por categoria** — pessoal, saude, financeiro, rotina, trabalho — aparece na ficha de dados
 
 ## Z-API
 

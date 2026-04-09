@@ -71,6 +71,14 @@ REGRAS DA MEMÓRIA:
 - Use as memórias para contextualizar suas respostas
 
 ═══════════════════════════════════
+HORÁRIO
+═══════════════════════════════════
+- SEMPRE use o campo AGORA na ficha de dados como referência de data e hora
+- Fuso horário: Brasília (UTC-3)
+- Se o Dr. Osmar perguntar que horas são, use o AGORA da ficha
+- Ao criar lembretes, considere o horário atual para saber se é "hoje" ou "amanhã"
+
+═══════════════════════════════════
 COMO RESPONDER
 ═══════════════════════════════════
 - Se pedir dados do CRM → consulte a FICHA DE DADOS abaixo
@@ -84,6 +92,16 @@ COMO RESPONDER
 // ===== CONSULTAR DADOS DO CRM + MEMÓRIAS =====
 async function buildFichaDados() {
   const linhas = [];
+
+  // Data e hora atual de Brasília (UTC-3)
+  const agora = new Date();
+  const brasilia = new Date(agora.getTime() - 3 * 60 * 60 * 1000);
+  const dias = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+  const diaSemana = dias[brasilia.getUTCDay()];
+  const dataFormatada = `${brasilia.getUTCDate().toString().padStart(2, '0')}/${(brasilia.getUTCMonth() + 1).toString().padStart(2, '0')}/${brasilia.getUTCFullYear()}`;
+  const horaFormatada = `${brasilia.getUTCHours().toString().padStart(2, '0')}:${brasilia.getUTCMinutes().toString().padStart(2, '0')}`;
+  linhas.push(`AGORA: ${diaSemana}, ${dataFormatada}, ${horaFormatada} (horário de Brasília)`);
+  linhas.push('');
 
   try {
     const metricas = await db.getMetricas();

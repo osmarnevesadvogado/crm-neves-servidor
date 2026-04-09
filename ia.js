@@ -328,7 +328,13 @@ async function generateResponse(history, userMessage, conversaId, lead, contexto
 
   // A FICHA vai junto com a mensagem do lead (não só no system prompt)
   // Isso garante que o modelo leia a ficha imediatamente antes de responder
+  // Data/hora de Brasília para contexto
+  const agora = new Date();
+  const brasilia = new Date(agora.getTime() - 3 * 60 * 60 * 1000);
+  const dataHoraBrasilia = `${brasilia.getUTCDate().toString().padStart(2, '0')}/${(brasilia.getUTCMonth() + 1).toString().padStart(2, '0')}/${brasilia.getUTCFullYear()} ${brasilia.getUTCHours().toString().padStart(2, '0')}:${brasilia.getUTCMinutes().toString().padStart(2, '0')}`;
+
   const fichaCompleta = `===== FICHA DO LEAD (CONSULTE ANTES DE RESPONDER) =====
+AGORA: ${dataHoraBrasilia} (horário de Brasília)
 ${fichaLead}
 ${agendaSection}
 =========================
